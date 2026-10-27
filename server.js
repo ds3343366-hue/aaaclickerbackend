@@ -12,10 +12,12 @@ const PORT = process.env.PORT || 3000;
 
 let bot = null; 
 
+// Инициализируем бота Telegraf только при наличии токена
 if (process.env.TELEGRAM_BOT_TOKEN) {
   bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 }
-// Подключение мидлваров для обработки данных и CORS
+
+// Подключение мидлваров для обработки входящих JSON-данных и CORS
 app.use(cors());
 app.use(express.json());
 
@@ -26,8 +28,8 @@ const UPGRADE_CARDS_CONFIG = {
   crypto_card: { basePrice: 2000, baseProfit: 200 }
 };
 
-// ИСПРАВЛЕНО: Теперь синтаксис верный, массиву присвоены пороговые значения монет
-const BACKEND_LEVELS = Array.of(5000, 25000, 100000, 1000000); // Пороги опыта для уровней 2, 3, 4 и 5
+// Зафиксированные числовые пороги монет для перехода на уровни 2, 3, 4 и 5
+const BACKEND_LEVELS = Array.of(5000, 25000, 100000, 1000000);
 
 // =========================================================================
 // РАЗДЕЛ 2: СХЕМА ДАННЫХ ПОЛЬЗОВАТЕЛЯ MONGOOSE (БАЗА ДАННЫХ)
@@ -67,7 +69,7 @@ const UserSchema = new mongoose.Schema({
   lastCipherDate: { type: String, default: '' }
 }, { timestamps: true });
 
-// Метод автоматического расчета пассивного дохода и энергии за время отсутствия
+// Метод автоматического расчета пассивного дохода и энергии за время отсутствия в игре
 UserSchema.methods.calculateOfflineProgress = function() {
   const now = new Date();
   const secondsOffline = Math.floor((now - this.lastSync) / 1000);
@@ -134,7 +136,7 @@ app.post('/api/user/click', async (req, res) => {
     user.balance += coinsEarned;
     user.totalEarned += coinsEarned; 
 
-    // Расчет лиги на основе исправленного массива BACKEND_LEVELS
+    // Расчет лиги на основе массива BACKEND_LEVELS
     let calculatedLevel = 1;
     for (let i = 0; i < BACKEND_LEVELS.length; i++) {
       if (user.totalEarned >= BACKEND_LEVELS[i]) {
@@ -204,7 +206,7 @@ app.post('/api/user/buy-card', async (req, res) => {
 // РАЗДЕЛ 4: ИГРОВЫЕ ЭНДПОИНТЫ API — ОКОНЧАНИЕ
 // =========================================================================
 
-// 4. СТРИКИ И ЕЖЕДНЕВНЫЙ СБОР НАГРАД Календаря
+// 4. СТРИКИ И ЕЖЕДНЕВНЫЙ СБОР НАГРАД КАЛЕНДАРЯ
 app.post('/api/user/claim-daily', async (req, res) => {
   try {
     const { telegramId } = req.body;
@@ -243,16 +245,62 @@ app.post('/api/user/claim-daily', async (req, res) => {
 app.get('/', (req, res) => res.send('API кликера стабильно работает онлайн! 🐹'));
 
 // =========================================================================
-// РАЗДЕЛ 5: ЗАПУСК TELEGRAM-БОТА С РЕФЕРАЛЬНОЙ СИСТЕМОЙ
+// РАЗДЕЛ 5: ЗАПУСК TELEGRAM-БОТА С РЕФЕРАЛЬНОЙ СИСТЕМОЙ (ИСПРАВЛЕНО)
 // =========================================================================
 if (bot) {
-bot.start (async (ctx) => {
-bot.launch
+  bot.start(async (ctx) => {
+    try {
+      const telegramId = ctx.from.id.toString();
+      const username = ctx.from.username || ctx.from.first_name || "Игрок";
+      const startPayload = ctx.payload; 
+
+      let user = await User.findOne({ telegramId });
+
+      if (!user) {
+        let referredById = null;
+
+        if (startPayload && startPayload.startsWith('ref')) {
+          referredById = startPayload.replace('ref', ''); 
+          if (referredById === telegramId) referredById = null;
+        }
+
+        user = new User({
+          telegramId,
+          username,
+          referredBy: referredById,
+          balance: referredById ? 5000 : 0 
+        });
+        await user.save();
+
+        // Начисление бонуса пригласившему игроку
+        if (referredById) {
+          const inviter = await User.findOne({ telegramId: referredById });
+          if (inviter) {
+            inviter.balance += 5000;
+            inviter.totalEarned += 5000;
+            inviter.referrals.push({ userId: telegramId, username: username, bonusClaimed: true });
+            await inviter.save();
+          }
+        }
+      }
+
+      ctx.reply(`Привет, ${username}! Добро пожаловать!\nНажми на кнопку ниже, чтобы запустить игру:`, {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "Играть! 🐹", web_app: { url: process.env.FRONTEND_URL || "https://vercel.com" } }]
+          ]
+        }
+      });
+    } catch (err) {
+      console.error("Ошибка внутри обработчика bot.start:", err);
+    }
+  });
 }
+
 // =========================================================================
 // ОБНОВЛЕННЫЙ РАЗДЕЛ 6: КОННЕКТ К БАЗЕ ДАННЫХ И СИНХРОННЫЙ ЗАПУСК
 // =========================================================================
-const mongoUri = process.env.MONGO_URI || 'mongodb+srv://gold:YTnP4CNIorPtWxRp@cluster0.rodagtc.mongodb.net/';
+const mongoUri = process.env.MONGO_URI || 'mongodb://localhost:27017/hamster_clicker';
 
 mongoose.connect(mongoUri)
   .then(() => {
@@ -263,7 +311,7 @@ mongoose.connect(mongoUri)
       console.log(`🚀 Сервер Express начал слушать порт ${PORT}`);
       
       // 2. Только после успешного старта порта запускаем Telegram-бота в фоне
-      if (process.env.TELEGRAM_BOT_TOKEN) {
+      if (bot && process.env.TELEGRAM_BOT_TOKEN) {
         bot.launch()
           .then(() => console.log('🤖 Робот Telegraf успешно запущен в фоновом режиме Polling'))
           .catch((botError) => console.error('❌ Ошибка при старте самого бота:', botError));
@@ -274,4 +322,7 @@ mongoose.connect(mongoUri)
     console.error('❌ Сбой при подключении к MongoDB:', err);
   });
 
+// Системные перехватчики, защищающие NodeJS от аварийного отключения
+process.on('unhandledRejection', (reason) => console.error('❌ Ошибка Rejection:', reason));
+process.on('uncaughtException', (err) => console.error('❌ Критическая ошибка Exception:', err));
 
