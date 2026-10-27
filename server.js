@@ -10,6 +10,11 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+let bot = null; 
+
+if (process.env.TELEGRAM_BOT_TOKEN) {
+  bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+}
 // Подключение мидлваров для обработки данных и CORS
 app.use(cors());
 app.use(express.json());
@@ -240,58 +245,9 @@ app.get('/', (req, res) => res.send('API кликера стабильно ра�
 // =========================================================================
 // РАЗДЕЛ 5: ЗАПУСК TELEGRAM-БОТА С РЕФЕРАЛЬНОЙ СИСТЕМОЙ
 // =========================================================================
-if (process.env.TELEGRAM_BOT_TOKEN) {
-  const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-
-  bot.start(async (ctx) => {
-    const telegramId = ctx.from.id.toString();
-    const username = ctx.from.username || ctx.from.first_name || "Игрок";
-    const startPayload = ctx.payload; 
-
-    let user = await User.findOne({ telegramId });
-
-    if (!user) {
-      let referredById = null;
-
-      if (startPayload && startPayload.startsWith('ref')) {
-        referredById = startPayload.replace('ref', ''); 
-        if (referredById === telegramId) referredById = null;
-      }
-
-      user = new User({
-        telegramId,
-        username,
-        referredBy: referredById,
-        balance: referredById ? 5000 : 0 
-      });
-      await user.save();
-
-      if (referredById) {
-        try {
-          const inviter = await User.findOne({ telegramId: referredById });
-          if (inviter) {
-            inviter.balance += 5000;
-            inviter.totalEarned += 5000;
-            inviter.referrals.push({ userId: telegramId, username: username, bonusClaimed: true });
-            await inviter.save();
-          }
-        } catch (err) {
-          console.error("Ошибка начисления реф-бонуса:", err);
-        }
-      }
-    }
-
-    ctx.reply(`Привет, ${username}! Добро пожаловать!\nНажми на кнопку ниже, чтобы запустить игру:`, {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "Играть! 🐹", web_app: { url: process.env.FRONTEND_URL || "https://vercel.com" } }]
-        ]
-      }
-    });
-  });
-
-} else {
-  console.warn('⚠️ TELEGRAM_BOT_TOKEN отсутствует в конфигурации окружения. Бот отключен.');
+if (bot) {
+bot.start (async (ctx) => {
+bot.launch
 }
 // =========================================================================
 // ОБНОВЛЕННЫЙ РАЗДЕЛ 6: КОННЕКТ К БАЗЕ ДАННЫХ И СИНХРОННЫЙ ЗАПУСК
