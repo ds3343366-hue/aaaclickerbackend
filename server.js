@@ -290,21 +290,32 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
     });
   });
 
-  bot.launch();
-  console.log('🤖 Робот Telegraf успешно активирован');
 } else {
   console.warn('⚠️ TELEGRAM_BOT_TOKEN отсутствует в конфигурации окружения. Бот отключен.');
 }
-
 // =========================================================================
-// РАЗДЕЛ 6: КОННЕКТ К БАЗЕ ДАННЫХ И ЗАПУСК СЕТЕВОГО ПОРТА
+// ОБНОВЛЕННЫЙ РАЗДЕЛ 6: КОННЕКТ К БАЗЕ ДАННЫХ И СИНХРОННЫЙ ЗАПУСК
 // =========================================================================
-const mongoUri = process.env.MONGO_URI || 'mongodb://localhost:27017/hamster_clicker';
+const mongoUri = process.env.MONGO_URI || 'mongodb+srv://gold:YTnP4CNIorPtWxRp@cluster0.rodagtc.mongodb.net/';
 
 mongoose.connect(mongoUri)
   .then(() => {
     console.log('✅ База данных MongoDB успешно подключена');
-    app.listen(PORT, () => console.log(`🚀 Сервер Express начал слушать порт ${PORT}`));
+    
+    // 1. Сначала запускаем веб-порт Express для Render
+    app.listen(PORT, () => {
+      console.log(`🚀 Сервер Express начал слушать порт ${PORT}`);
+      
+      // 2. Только после успешного старта порта запускаем Telegram-бота в фоне
+      if (process.env.TELEGRAM_BOT_TOKEN) {
+        bot.launch()
+          .then(() => console.log('🤖 Робот Telegraf успешно запущен в фоновом режиме Polling'))
+          .catch((botError) => console.error('❌ Ошибка при старте самого бота:', botError));
+      }
+    });
   })
-  .catch((err) => console.error('❌ Сбой при подключении к MongoDB:', err));
+  .catch((err) => {
+    console.error('❌ Сбой при подключении к MongoDB:', err);
+  });
+
 
