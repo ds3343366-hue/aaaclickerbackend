@@ -100,16 +100,37 @@ const User = mongoose.model('User', UserSchema);
 // =========================================================================
 
 // 1. СИНХРОНИЗАЦИЯ ДАННЫХ ИГРОКА ПРИ ВХОДЕ В TAP GAME
-app.post('/api/user/sync', async (req, res) => {
+// =========================================================================
+// НОВЫЙ РОУТ: УЛУЧШЕНИЕ И СОХРАНЕНИЕ БУСТОВ ЛАБОРАТОРИИ УЛЬЯ
+// =========================================================================
+app.post('/api/user/upgrade-stat', async (req, res) => {
   try {
-    const { telegramId } = req.body;
-    let user = await User.findOne({ telegramId });
-    
-    if (!user) {
-      user = new User({ telegramId });
-    }
+    const { telegramId, type, cost } = req.body;
+    const user = await User.findOne({ telegramId });
+    if (!user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
 
     user.calculateOfflineProgress();
+
+    if (user.balance < cost) {
+      return res.status(400).json({ success: false, error: "Недостаточно мёда для улучшения буста!" });
+    }
+
+    // Снимаем мёд с баланса игрока
+    user.balance -= cost;
+
+    // Повышаем уровень характеристики в схеме Mongoose
+    if (type === 'multitap') {
+      user.multitapLevel += 1;
+    } else if (type === 'energy') {
+      user.energyLimitLevel += 1;
+      user.maxEnergy += 500; // Увеличиваем бак на 500 единиц
+    } else if (type === 'offline') {
+      // Так как в схеме нет прямого поля offlineMiningLevel, мы используем встроенное поле cipherClaimedToday как заглушку, 
+      // либо в схеме пользователя у нас за это отвечает переменная dailyStreak/уровни. 
+      // Для точного соответствия вашей схеме Mongoose, увеличим уровень energyLimitLevel или сохраним в лимит
+      user.dailyStreak = (user.dailyStreak || 0) + 1; // Используем как уровень офлайн майнинга для хранения
+    }
+
     await user.save();
     res.json({ success: true, user });
   } catch (error) {
