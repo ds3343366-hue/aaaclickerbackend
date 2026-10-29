@@ -53,7 +53,7 @@ const UserSchema = new mongoose.Schema({
   maxEnergy: { type: Number, default: 1000 }, 
   multitapLevel: { type: Number, default: 1 }, 
   energyLimitLevel: { type: Number, default: 1 }, 
-  offlineMiningLevel: { type: Number, default: 1 }, // ИСПРАВЛЕНО: Добавлено явное поле для пассивного сна
+  offlineMiningLevel: { type: Number, default: 1 }, // Добавлено явное поле для пассивного сна
 
   referredBy: { type: String, default: null }, 
   referrals: [{
@@ -105,7 +105,7 @@ const User = mongoose.model('User', UserSchema);
 // РАЗДЕЛ 3: ИГРОВЫЕ ЭНДПОИНТЫ API (EXPRESS ROUTES)
 // =========================================================================
 
-// 1. ИСПРАВЛЕНО: СИНХРОНИЗАЦИЯ ДАННЫХ ИГРОКА ПРИ ВХОДЕ В TAP GAME
+// 1. СИНХРОНИЗАЦИЯ ДАННЫХ ИГРОКА ПРИ ВХОДЕ В TAP GAME
 app.post('/api/user/sync', async (req, res) => {
   try {
     const { telegramId } = req.body;
@@ -123,7 +123,7 @@ app.post('/api/user/sync', async (req, res) => {
   }
 });
 
-// 2. ИСПРАВЛЕНО: УЛУЧШЕНИЕ И СИНХРОННОЕ СОХРАНЕНИЕ БУСТОВ ЛАБОРАТОРИИ УЛЬЯ В БАЗУ
+// 2. УЛУЧШЕНИЕ И СИНХРОННОЕ СОХРАНЕНИЕ БУСТОВ ЛАБОРАТОРИИ УЛЬЯ В БАЗУ
 app.post('/api/user/upgrade-stat', async (req, res) => {
   try {
     const { telegramId, type, cost } = req.body;
@@ -285,7 +285,7 @@ if (bot) {
       ctx.reply(`Привет, ${username}! Добро пожаловать в улей Tap Game! 🐝\nНажми на кнопку ниже, чтобы начать собирать нектар и строить соты:`, {
         reply_markup: {
           inline_keyboard: [
-            [{ text: "Развивать Улей! 🍯", web_app: { url: process.env.FRONTEND_URL || "https://ds3343366-hue.github.io/clicker-frontend/" } }]
+            [{ text: "Развивать Улей! 🍯", web_app: { url: process.env.FRONTEND_URL || "https://github.io" } }]
           ]
         }
       });
@@ -298,7 +298,7 @@ if (bot) {
 // =========================================================================
 // РАЗДЕЛ 6: ИСПРАВЛЕНО: БЕЗОПАСНЫЙ СИНХРОННЫЙ ЗАПУСК БАЗЫ MONGOOSE ИЗ ENV
 // =========================================================================
-const fallbackMongo = 'mongodb://127.0.0.1:27017/tap game';
+const fallbackMongo = 'mongodb://127.0.0.1:27017/tap_game';
 const mongoUri = process.env.MONGO_URI || fallbackMongo;
 
 mongoose.connect(mongoUri)
