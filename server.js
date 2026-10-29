@@ -305,7 +305,7 @@ if (bot) {
       ctx.reply(`Привет, ${username}! Добро пожаловать в улей Tap Game! 🐝\nНажми на кнопку ниже, чтобы начать собирать нектар и строить соты:`, {
         reply_markup: {
           inline_keyboard: [
-            [{ text: "Развивать Улей! 🍯", web_app: { url: process.env.FRONTEND_URL || "https://vercel.com" } }]
+            [{ text: "Развивать Улей! 🍯", web_app: { url: process.env.FRONTEND_URL || "https://ds3343366-hue.github.io/clicker-frontend/" } }]
           ]
         }
       });
@@ -318,7 +318,7 @@ if (bot) {
 // =========================================================================
 // РАЗДЕЛ 6: КОННЕКТ К БАЗЕ ДАННЫХ И СИНХРОННЫЙ ЗАПУСК
 // =========================================================================
-const mongoUri = process.env.MONGO_URI || 'mongodb://localhost:27017/hamster_clicker';
+const mongoUri = process.env.MONGO_URI || 'mongodb://https://github.com/ds3343366-hue/aaaclickerbackend';
 
 mongoose.connect(mongoUri)
   .then(() => {
