@@ -11,28 +11,23 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 let bot = null; 
-
-// Инициализируем бота Telegraf только при наличии токена
 if (process.env.TELEGRAM_BOT_TOKEN) {
   bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 }
 
-// Подключение мидлваров для обработки входящих JSON-данных и CORS
 app.use(cors());
 app.use(express.json());
 
-// Базовые конфигурации бизнес-сот (синхронизировано с фронтендом)
 const UPGRADE_CARDS_CONFIG = {
   ceo_card: { basePrice: 100, baseProfit: 10 },
   marketing_card: { basePrice: 500, baseProfit: 45 },
   crypto_card: { basePrice: 2000, baseProfit: 200 }
 };
 
-// Числовые пороги меда для перехода на уровни пчелы (2 — Рабочий, 3 — Сборщик, 4 — Охранник, 5 — Королева)
 const BACKEND_LEVELS = Array.of(5000, 25000, 100000, 1000000);
 
 // =========================================================================
-// РАЗДЕЛ 2: СХЕМА ДАННЫХ ПЧЕЛИНОГО УЛЬЯ MONGOOSE (ДОБАВЛЕНЫ БУСТЫ)
+// РАЗДЕЛ 2: СХЕМА ДАННЫХ ПЧЕЛИНОГО УЛЬЯ MONGOOSE
 // =========================================================================
 const UserSchema = new mongoose.Schema({
   telegramId: { type: String, required: true, unique: true },
@@ -48,12 +43,11 @@ const UserSchema = new mongoose.Schema({
     level: { type: Number, default: 1 }      
   }],
 
-  // Характеристики бустов Лаборатории намертво привязаны к схеме Mongoose
   energy: { type: Number, default: 1000 }, 
   maxEnergy: { type: Number, default: 1000 }, 
   multitapLevel: { type: Number, default: 1 }, 
   energyLimitLevel: { type: Number, default: 1 }, 
-  offlineMiningLevel: { type: Number, default: 1 }, // Добавлено явное поле для пассивного сна
+  offlineMiningLevel: { type: Number, default: 1 }, 
 
   referredBy: { type: String, default: null }, 
   referrals: [{
@@ -63,36 +57,26 @@ const UserSchema = new mongoose.Schema({
   }],
 
   dailyStreak: { type: Number, default: 0 }, 
-  lastDailyClaim: { type: Date, default: null }, 
-
-  comboClaimedToday: { type: Boolean, default: false }, 
-  lastComboDate: { type: String, default: '' }, 
-  cipherClaimedToday: { type: Boolean, default: false }, 
-  lastCipherDate: { type: String, default: '' }
+  lastDailyClaim: { type: Date, default: null }
 }, { timestamps: true });
 
-// Метод расчета пассивного сбора меда роем за время офлайна (3 часа лимит)
 UserSchema.methods.calculateOfflineProgress = function() {
   const now = new Date();
   const secondsOffline = Math.floor((now - this.lastSync) / 1000);
-
   if (secondsOffline <= 0) return;
 
   const maxOfflineSeconds = 3 * 60 * 60; 
   const activeOfflineSeconds = Math.min(secondsOffline, maxOfflineSeconds);
   
-  // Доход формируется от бизнес-сот + уровня технологий офлайн сна (+50/ч за уровень)
   const totalHourlyProfit = this.profitPerHour + ((this.offlineMiningLevel - 1) * 50);
   
   if (totalHourlyProfit > 0) {
     const profitPerSecond = totalHourlyProfit / 3600;
     const earnedOffline = Math.floor(activeOfflineSeconds * profitPerSecond);
-    
     this.balance += earnedOffline;
     this.totalEarned += earnedOffline;
   }
 
-  // Полное восстановление бака занимает строго 3 часа (10800 секунд)
   const recoveryPerSecond = this.maxEnergy / 10800;
   const recoveredEnergy = secondsOffline * recoveryPerSecond;
   this.energy = Math.min(this.maxEnergy, this.energy + recoveredEnergy);
@@ -105,19 +89,25 @@ const User = mongoose.model('User', UserSchema);
 // РАЗДЕЛ 3: ИГРОВЫЕ ЭНДПОИНТЫ API (EXPRESS ROUTES)
 // =========================================================================
 
-// 1. ИСПРАВЛЕНО: СИНХРОНИЗАЦИЯ ДАННЫХ ИГРОКА ПРИ ВХОДЕ В TAP GAME
+// 1. ИСПРАВЛЕНО: Полная выдача всех бустов при авторизации игрока
 app.post('/api/user/sync', async (req, res) => {
   try {
     const { telegramId } = req.body;
     let user = await User.findOne({ telegramId });
     
     if (!user) {
-      user = new User({ telegramId });
+      user = new User({ 
+        telegramId,
+        energy: 1000,
+        maxEnergy: 1000,
+        multitapLevel: 1,
+        energyLimitLevel: 1,
+        offlineMiningLevel: 1
+      });
     }
 
-    // Принудительно запускаем пассивный просчет перед сохранением
     user.calculateOfflineProgress();
-    user.lastSync = new Date(); // Обновляем метку времени синхронизации
+    user.lastSync = new Date(); 
     await user.save();
     res.json({ success: true, user });
   } catch (error) {
@@ -125,7 +115,7 @@ app.post('/api/user/sync', async (req, res) => {
   }
 });
 
-// 2. УЛУЧШЕНИЕ И СИНХРОННОЕ СОХРАНЕНИЕ БУСТОВ ЛАБОРАТОРИИ УЛЬЯ В БАЗУ
+// 2. ИСПРАВЛЕНО: Сохранение бустов Лаборатории намертво в базу данных
 app.post('/api/user/upgrade-stat', async (req, res) => {
   try {
     const { telegramId, type, cost } = req.body;
@@ -133,22 +123,18 @@ app.post('/api/user/upgrade-stat', async (req, res) => {
     if (!user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
 
     user.calculateOfflineProgress();
+    if (user.balance < cost) return res.status(400).json({ success: false, error: "Недостаточно мёда!" });
 
-    if (user.balance < cost) {
-      return res.status(400).json({ success: false, error: "Недостаточно мёда для улучшения буста!" });
-    }
-
-    // Снимаем мёд с баланса игрока
     user.balance -= cost;
 
-    // Повышаем уровень характеристики в схеме Mongoose
     if (type === 'multitap') {
       user.multitapLevel += 1;
     } else if (type === 'energy') {
       user.energyLimitLevel += 1;
-      user.maxEnergy += 500; // Повышаем лимит бака на 500 монет
+      user.maxEnergy += 500;
+      user.energy = user.maxEnergy; // Сразу восполняем бак при улучшении
     } else if (type === 'offline') {
-      user.offlineMiningLevel += 1; // Повышаем технологию офлайн сна пчелы
+      user.offlineMiningLevel += 1;
     }
 
     user.lastSync = new Date();
@@ -159,7 +145,7 @@ app.post('/api/user/upgrade-stat', async (req, res) => {
   }
 });
 
-// 3. ОБРАБОТКА ПАКЕТА КЛИКОВ (АНТИЧИТ + АПДЕЙТ РАНГА ПЧЕЛЫ НА СЕРВЕРЕ)
+// 3. ИСПРАВЛЕНО: Роут кликов теперь возвращает полную структуру бустов
 app.post('/api/user/click', async (req, res) => {
   try {
     const { telegramId, clicksCount } = req.body;
@@ -167,67 +153,61 @@ app.post('/api/user/click', async (req, res) => {
     if (!user) return res.status(404).json({ error: "Пользователь не найден" });
 
     user.calculateOfflineProgress();
-
     const requiredEnergy = clicksCount * user.multitapLevel;
-    if (user.energy < requiredEnergy) {
-      return res.status(400).json({ error: "Недостаточно энергии для сбора нектара!" });
-    }
+    if (user.energy < requiredEnergy) return res.status(400).json({ error: "Недостаточно энергии!" });
 
     user.energy -= requiredEnergy;
     const coinsEarned = clicksCount * user.multitapLevel;
     user.balance += coinsEarned;
     user.totalEarned += coinsEarned; 
 
-    // Расчет эволюционного уровня пчелы на основе массива BACKEND_LEVELS
     let calculatedLevel = 1;
     for (let i = 0; i < BACKEND_LEVELS.length; i++) {
-      if (user.totalEarned >= BACKEND_LEVELS[i]) {
-        calculatedLevel = i + 1;
-      } else {
-        break;
-      }
+      if (user.totalEarned >= BACKEND_LEVELS[i]) calculatedLevel = i + 2;
+      else break;
     }
     user.level = calculatedLevel;
 
     user.lastSync = new Date();
     await user.save();
+    
+    // Возвращаем фронтенду полные переменные, чтобы избежать зануления UI
     res.json({ 
       success: true, 
       balance: user.balance, 
       totalEarned: user.totalEarned,
       energy: user.energy, 
-      level: user.level 
+      maxEnergy: user.maxEnergy,
+      level: user.level,
+      multitapLevel: user.multitapLevel,
+      energyLimitLevel: user.energyLimitLevel,
+      offlineMiningLevel: user.offlineMiningLevel
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
-// 4. УЛУЧШЕНИЕ КАРТОЧЕК В РАЗДЕЛЕ «РАЗВИТИЕ СОТ» (МАЙНИНГ БИЗНЕС-СОТ)
+// 4. УЛУЧШЕНИЕ БИЗНЕС-СОТ (СОХРАНЯЕТ КАРТОЧКИ В МАССИВ В BAZU)
 app.post('/api/user/buy-card', async (req, res) => {
   try {
     const { telegramId, cardId } = req.body;
     const cardConfig = UPGRADE_CARDS_CONFIG[cardId];
-    if (!cardConfig) return res.status(400).json({ success: false, error: "Такого улучшения не существует в улье" });
+    if (!cardConfig) return res.status(400).json({ success: false, error: "Карта не найдена" });
 
     const user = await User.findOne({ telegramId });
     if (!user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
 
     user.calculateOfflineProgress();
-
     const userCardIndex = user.purchasedCards.findIndex(c => c.cardId === cardId);
     const currentLevel = userCardIndex !== -1 ? user.purchasedCards[userCardIndex].level : 0;
     const currentPrice = Math.floor(cardConfig.basePrice * Math.pow(1.5, currentLevel));
 
-    if (user.balance < currentPrice) {
-      return res.status(400).json({ success: false, error: "В улье недостаточно меда для покупки!" });
-    }
+    if (user.balance < currentPrice) return res.status(400).json({ success: false, error: "Не хватает меда!" });
 
     const currentProfit = currentLevel > 0 ? Math.floor(cardConfig.baseProfit * Math.pow(1.2, currentLevel - 1)) : 0;
     const nextProfit = Math.floor(cardConfig.baseProfit * Math.pow(1.2, currentLevel));
-    const profitIncrease = nextProfit - currentProfit;
-
     user.balance -= currentPrice;
-    user.profitPerHour += profitIncrease;
+    user.profitPerHour += (nextProfit - currentProfit);
 
     if (userCardIndex !== -1) {
       user.purchasedCards[userCardIndex].level += 1;
@@ -237,20 +217,14 @@ app.post('/api/user/buy-card', async (req, res) => {
 
     user.lastSync = new Date();
     await user.save();
-    res.json({
-      success: true,
-      user: { balance: user.balance, profitPerHour: user.profitPerHour, purchasedCards: user.purchasedCards }
-    });
+    res.json({ success: true, user });
   } catch (error) {
-    res.status(500).json({ success: false, error: "Внутренняя ошибка сервера" });
+    res.status(500).json({ success: false, error: "Ошибка сервера" });
   }
 });
 
 app.get('/', (req, res) => res.send('API пчелиного кликера Tap Game стабильно работает онлайн! 🐝'));
 
-// =========================================================================
-// РАЗДЕЛ 5: ЗАПУСК TELEGRAM-БОТА С ПЧЕЛИНОЙ РЕФЕРАЛЬНОЙ СИСТЕМОЙ
-// =========================================================================
 if (bot) {
   bot.start(async (ctx) => {
     try {
@@ -259,71 +233,43 @@ if (bot) {
       const startPayload = ctx.payload; 
 
       let user = await User.findOne({ telegramId });
-
       if (!user) {
         let referredById = null;
-
         if (startPayload && startPayload.startsWith('ref')) {
           referredById = startPayload.replace('ref', ''); 
           if (referredById === telegramId) referredById = null;
         }
 
         user = new User({
-          telegramId,
-          username,
-          referredBy: referredById,
-          balance: referredById ? 5000 : 0 
+          telegramId, username, referredBy: referredById, balance: referredById ? 5000 : 0
         });
         await user.save();
 
         if (referredById) {
           const inviter = await User.findOne({ telegramId: referredById });
           if (inviter) {
-            inviter.balance += 5000;
-            inviter.totalEarned += 5000;
+            inviter.balance += 5000; inviter.totalEarned += 5000;
             inviter.referrals.push({ userId: telegramId, username: username, bonusClaimed: true });
             await inviter.save();
           }
         }
       }
-
-      ctx.reply(`Привет, ${username}! Добро пожаловать в улей Tap Game! 🐝\nНажми на кнопку ниже, чтобы начать собирать нектар и строить соты:`, {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "Развивать Улей! 🍯", web_app: { url: process.env.FRONTEND_URL || "https://ds3343366-hue.github.io/clicker-frontend/" } }]
-          ]
-        }
+      ctx.reply(`Привет, ${username}! Добро пожаловать в улей Tap Game! 🐝`, {
+        reply_markup: { inline_keyboard: [[{ text: "Развивать Улей! 🍯", web_app: { url: process.env.FRONTEND_URL || "https://ds3343366-hue.github.io/clicker-frontend/" } }]] }
       });
-    } catch (err) {
-      console.error("Ошибка внутри обработчика bot.start:", err);
-    }
+    } catch (err) { console.error("Ошибка бота:", err); }
   });
 }
 
-// =========================================================================
-// РАЗДЕЛ 6: БЕЗОПАСНЫЙ СИНХРОННЫЙ ЗАПУСК БАЗЫ MONGOOSE ИЗ ENV
-// =========================================================================
-const fallbackMongo = 'mongodb://127.0.0.1:27017/tap_game';
-const mongoUri = process.env.MONGO_URI || fallbackMongo;
-
+const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/tap_game';
 mongoose.connect(mongoUri)
   .then(() => {
     console.log('✅ База данных MongoDB Atlas успешно подключена');
-    
     app.listen(PORT, () => {
       console.log(`🚀 Сервер Express начал слушать порт ${PORT}`);
-      
       if (bot && process.env.TELEGRAM_BOT_TOKEN) {
-        bot.launch()
-          .then(() => console.log('🤖 Робот Telegraf успешно запущен в фоновом режиме Polling'))
-          .catch((botError) => console.error('❌ Ошибка при старте самого бота:', botError));
+        bot.launch().then(() => console.log('🤖 Робот Telegraf успешно запущен в фоновом режиме Polling'));
       }
     });
-  })
-  .catch((err) => {
-    console.error('❌ Сбой при подключении к MongoDB:', err);
   });
-
-process.on('unhandledRejection', (reason) => console.error('❌ Ошибка Rejection:', reason));
-process.on('uncaughtException', (err) => console.error('❌ Критическая ошибка Exception:', err));
 
