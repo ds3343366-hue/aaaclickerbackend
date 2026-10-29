@@ -105,7 +105,7 @@ const User = mongoose.model('User', UserSchema);
 // РАЗДЕЛ 3: ИГРОВЫЕ ЭНДПОИНТЫ API (EXPRESS ROUTES)
 // =========================================================================
 
-// 1. СИНХРОНИЗАЦИЯ ДАННЫХ ИГРОКА ПРИ ВХОДЕ В TAP GAME
+// 1. ИСПРАВЛЕНО: СИНХРОНИЗАЦИЯ ДАННЫХ ИГРОКА ПРИ ВХОДЕ В TAP GAME
 app.post('/api/user/sync', async (req, res) => {
   try {
     const { telegramId } = req.body;
@@ -115,7 +115,9 @@ app.post('/api/user/sync', async (req, res) => {
       user = new User({ telegramId });
     }
 
+    // Принудительно запускаем пассивный просчет перед сохранением
     user.calculateOfflineProgress();
+    user.lastSync = new Date(); // Обновляем метку времени синхронизации
     await user.save();
     res.json({ success: true, user });
   } catch (error) {
@@ -149,6 +151,7 @@ app.post('/api/user/upgrade-stat', async (req, res) => {
       user.offlineMiningLevel += 1; // Повышаем технологию офлайн сна пчелы
     }
 
+    user.lastSync = new Date();
     await user.save();
     res.json({ success: true, user });
   } catch (error) {
@@ -186,6 +189,7 @@ app.post('/api/user/click', async (req, res) => {
     }
     user.level = calculatedLevel;
 
+    user.lastSync = new Date();
     await user.save();
     res.json({ 
       success: true, 
@@ -231,6 +235,7 @@ app.post('/api/user/buy-card', async (req, res) => {
       user.purchasedCards.push({ cardId: cardId, level: 1 });
     }
 
+    user.lastSync = new Date();
     await user.save();
     res.json({
       success: true,
@@ -285,7 +290,7 @@ if (bot) {
       ctx.reply(`Привет, ${username}! Добро пожаловать в улей Tap Game! 🐝\nНажми на кнопку ниже, чтобы начать собирать нектар и строить соты:`, {
         reply_markup: {
           inline_keyboard: [
-            [{ text: "Развивать Улей! 🍯", web_app: { url: process.env.FRONTEND_URL || "https://github.io" } }]
+            [{ text: "Развивать Улей! 🍯", web_app: { url: process.env.FRONTEND_URL || "https://ds3343366-hue.github.io/clicker-frontend/" } }]
           ]
         }
       });
@@ -296,7 +301,7 @@ if (bot) {
 }
 
 // =========================================================================
-// РАЗДЕЛ 6: ИСПРАВЛЕНО: БЕЗОПАСНЫЙ СИНХРОННЫЙ ЗАПУСК БАЗЫ MONGOOSE ИЗ ENV
+// РАЗДЕЛ 6: БЕЗОПАСНЫЙ СИНХРОННЫЙ ЗАПУСК БАЗЫ MONGOOSE ИЗ ENV
 // =========================================================================
 const fallbackMongo = 'mongodb://127.0.0.1:27017/tap_game';
 const mongoUri = process.env.MONGO_URI || fallbackMongo;
