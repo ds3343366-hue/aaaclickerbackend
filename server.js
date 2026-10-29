@@ -1,6 +1,3 @@
-// =========================================================================
-// РАЗДЕЛ 1: ИНИЦИАЛИЗАЦИЯ СЕРВЕРА И КОНФИГУРАЦИЯ ОКРУЖЕНИЯ (TAP GAME)
-// =========================================================================
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -26,38 +23,29 @@ const UPGRADE_CARDS_CONFIG = {
 
 const BACKEND_LEVELS = Array.of(5000, 25000, 100000, 1000000);
 
-// =========================================================================
-// РАЗДЕЛ 2: СХЕМА ДАННЫХ ПЧЕЛИНОГО УЛЬЯ MONGOOSE
-// =========================================================================
 const UserSchema = new mongoose.Schema({
   telegramId: { type: String, required: true, unique: true },
   username: { type: String, default: '' },
   balance: { type: Number, default: 0 }, 
   totalEarned: { type: Number, default: 0 }, 
   level: { type: Number, default: 1 }, 
-
   profitPerHour: { type: Number, default: 0 }, 
   lastSync: { type: Date, default: Date.now }, 
   purchasedCards: [{
     cardId: { type: String, required: true }, 
     level: { type: Number, default: 1 }      
   }],
-
   energy: { type: Number, default: 1000 }, 
   maxEnergy: { type: Number, default: 1000 }, 
   multitapLevel: { type: Number, default: 1 }, 
   energyLimitLevel: { type: Number, default: 1 }, 
   offlineMiningLevel: { type: Number, default: 1 }, 
-
   referredBy: { type: String, default: null }, 
   referrals: [{
     userId: { type: String }, 
     username: { type: String },
     bonusClaimed: { type: Boolean, default: false } 
-  }],
-
-  dailyStreak: { type: Number, default: 0 }, 
-  lastDailyClaim: { type: Date, default: null }
+  }]
 }, { timestamps: true });
 
 UserSchema.methods.calculateOfflineProgress = function() {
@@ -85,27 +73,16 @@ UserSchema.methods.calculateOfflineProgress = function() {
 };
 
 const User = mongoose.model('User', UserSchema);
-// =========================================================================
-// РАЗДЕЛ 3: ИГРОВЫЕ ЭНДПОИНТЫ API (EXPRESS ROUTES)
-// =========================================================================
-
-// 1. ИСПРАВЛЕНО: Полная выдача всех бустов при авторизации игрока
+// 1. СИНХРОНИЗАЦИЯ (ВХОД ИГРОКА)
 app.post('/api/user/sync', async (req, res) => {
   try {
     const { telegramId } = req.body;
     let user = await User.findOne({ telegramId });
-    
     if (!user) {
       user = new User({ 
-        telegramId,
-        energy: 1000,
-        maxEnergy: 1000,
-        multitapLevel: 1,
-        energyLimitLevel: 1,
-        offlineMiningLevel: 1
+        telegramId, energy: 1000, maxEnergy: 1000, multitapLevel: 1, energyLimitLevel: 1, offlineMiningLevel: 1
       });
     }
-
     user.calculateOfflineProgress();
     user.lastSync = new Date(); 
     await user.save();
@@ -115,7 +92,7 @@ app.post('/api/user/sync', async (req, res) => {
   }
 });
 
-// 2. ИСПРАВЛЕНО: Сохранение бустов Лаборатории намертво в базу данных
+// 2. УЛУЧШЕНИЕ БУСТОВ (ЛАБОРАТОРИЯ)
 app.post('/api/user/upgrade-stat', async (req, res) => {
   try {
     const { telegramId, type, cost } = req.body;
@@ -124,7 +101,6 @@ app.post('/api/user/upgrade-stat', async (req, res) => {
 
     user.calculateOfflineProgress();
     if (user.balance < cost) return res.status(400).json({ success: false, error: "Недостаточно мёда!" });
-
     user.balance -= cost;
 
     if (type === 'multitap') {
@@ -132,20 +108,21 @@ app.post('/api/user/upgrade-stat', async (req, res) => {
     } else if (type === 'energy') {
       user.energyLimitLevel += 1;
       user.maxEnergy += 500;
-      user.energy = user.maxEnergy; // Сразу восполняем бак при улучшении
+      user.energy = user.maxEnergy;
     } else if (type === 'offline') {
       user.offlineMiningLevel += 1;
     }
 
     user.lastSync = new Date();
     await user.save();
+    // ИСПРАВЛЕНО: Теперь возвращаем ПОЛНЫЙ объект user, включая purchasedCards
     res.json({ success: true, user });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// 3. ИСПРАВЛЕНО: Роут кликов теперь возвращает полную структуру бустов
+// 3. РОУТ ПАКЕТА КЛИКОВ (АНТИЧИТ)
 app.post('/api/user/click', async (req, res) => {
   try {
     const { telegramId, clicksCount } = req.body;
@@ -171,23 +148,13 @@ app.post('/api/user/click', async (req, res) => {
     user.lastSync = new Date();
     await user.save();
     
-    // Возвращаем фронтенду полные переменные, чтобы избежать зануления UI
-    res.json({ 
-      success: true, 
-      balance: user.balance, 
-      totalEarned: user.totalEarned,
-      energy: user.energy, 
-      maxEnergy: user.maxEnergy,
-      level: user.level,
-      multitapLevel: user.multitapLevel,
-      energyLimitLevel: user.energyLimitLevel,
-      offlineMiningLevel: user.offlineMiningLevel
-    });
+    // ИСПРАВЛЕНО: Вместо урезанных полей возвращаем ПОЛНЫЙ объект user
+    res.json({ success: true, user });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
-// 4. УЛУЧШЕНИЕ БИЗНЕС-СОТ (СОХРАНЯЕТ КАРТОЧКИ В МАССИВ В BAZU)
+// 4. ПОКУПКА БИЗНЕС-СОТ (МАЙНИНГ)
 app.post('/api/user/buy-card', async (req, res) => {
   try {
     const { telegramId, cardId } = req.body;
@@ -239,10 +206,7 @@ if (bot) {
           referredById = startPayload.replace('ref', ''); 
           if (referredById === telegramId) referredById = null;
         }
-
-        user = new User({
-          telegramId, username, referredBy: referredById, balance: referredById ? 5000 : 0
-        });
+        user = new User({ telegramId, username, referredBy: referredById, balance: referredById ? 5000 : 0 });
         await user.save();
 
         if (referredById) {
@@ -255,21 +219,17 @@ if (bot) {
         }
       }
       ctx.reply(`Привет, ${username}! Добро пожаловать в улей Tap Game! 🐝`, {
-        reply_markup: { inline_keyboard: [[{ text: "Развивать Улей! 🍯", web_app: { url: process.env.FRONTEND_URL || "https://ds3343366-hue.github.io/clicker-frontend/" } }]] }
+        reply_markup: { inline_keyboard: [[{ text: "Развивать Улей! 🍯", web_app: { url: process.env.FRONTEND_URL || "https://ds3343366-hue.github.io/clicker-frontend" } }]] }
       });
     } catch (err) { console.error("Ошибка бота:", err); }
   });
 }
 
 const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/tap_game';
-mongoose.connect(mongoUri)
-  .then(() => {
-    console.log('✅ База данных MongoDB Atlas успешно подключена');
-    app.listen(PORT, () => {
-      console.log(`🚀 Сервер Express начал слушать порт ${PORT}`);
-      if (bot && process.env.TELEGRAM_BOT_TOKEN) {
-        bot.launch().then(() => console.log('🤖 Робот Telegraf успешно запущен в фоновом режиме Polling'));
-      }
-    });
-  });
+mongoose.connect(mongoUri).then(() => {
+  console.log('✅ База данных MongoDB Atlas успешно подключена');
+  app.listen(PORT, () => console.log(`🚀 Сервер Express начал слушать порт ${PORT}`));
+});
+
+
 
