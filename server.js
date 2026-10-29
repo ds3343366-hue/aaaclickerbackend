@@ -21,7 +21,7 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
 app.use(cors());
 app.use(express.json());
 
-// ИЗМЕНЕНО: Базовые конфигурации карточек переведены на пчелиную тематику
+// Базовые конфигурации бизнес-сот (синхронизировано с фронтендом)
 const UPGRADE_CARDS_CONFIG = {
   ceo_card: { basePrice: 100, baseProfit: 10 },
   marketing_card: { basePrice: 500, baseProfit: 45 },
@@ -32,26 +32,28 @@ const UPGRADE_CARDS_CONFIG = {
 const BACKEND_LEVELS = Array.of(5000, 25000, 100000, 1000000);
 
 // =========================================================================
-// РАЗДЕЛ 2: СХЕМА ДАННЫХ ПЧЕЛИНОГО УЛЬЯ MONGOOSE
+// РАЗДЕЛ 2: СХЕМА ДАННЫХ ПЧЕЛИНОГО УЛЬЯ MONGOOSE (ДОБАВЛЕНЫ БУСТЫ)
 // =========================================================================
 const UserSchema = new mongoose.Schema({
   telegramId: { type: String, required: true, unique: true },
   username: { type: String, default: '' },
-  balance: { type: Number, default: 0 }, // Баланс собранного меда
-  totalEarned: { type: Number, default: 0 }, // Всего добыто меда за всё время (для лиг)
-  level: { type: Number, default: 1 }, // Ранг эволюции пчелы
+  balance: { type: Number, default: 0 }, 
+  totalEarned: { type: Number, default: 0 }, 
+  level: { type: Number, default: 1 }, 
 
-  profitPerHour: { type: Number, default: 0 }, // Пассивный сбор улья в час
+  profitPerHour: { type: Number, default: 0 }, 
   lastSync: { type: Date, default: Date.now }, 
   purchasedCards: [{
     cardId: { type: String, required: true }, 
     level: { type: Number, default: 1 }      
   }],
 
+  // Характеристики бустов Лаборатории намертво привязаны к схеме Mongoose
   energy: { type: Number, default: 1000 }, 
   maxEnergy: { type: Number, default: 1000 }, 
   multitapLevel: { type: Number, default: 1 }, 
   energyLimitLevel: { type: Number, default: 1 }, 
+  offlineMiningLevel: { type: Number, default: 1 }, // ИСПРАВЛЕНО: Добавлено явное поле для пассивного сна
 
   referredBy: { type: String, default: null }, 
   referrals: [{
@@ -69,7 +71,7 @@ const UserSchema = new mongoose.Schema({
   lastCipherDate: { type: String, default: '' }
 }, { timestamps: true });
 
-// Метод расчета пассивного сбора меда роем и восстановления энергии за время офлайна
+// Метод расчета пассивного сбора меда роем за время офлайна (3 часа лимит)
 UserSchema.methods.calculateOfflineProgress = function() {
   const now = new Date();
   const secondsOffline = Math.floor((now - this.lastSync) / 1000);
@@ -79,16 +81,20 @@ UserSchema.methods.calculateOfflineProgress = function() {
   const maxOfflineSeconds = 3 * 60 * 60; 
   const activeOfflineSeconds = Math.min(secondsOffline, maxOfflineSeconds);
   
-  if (this.profitPerHour > 0) {
-    const profitPerSecond = this.profitPerHour / 3600;
+  // Доход формируется от бизнес-сот + уровня технологий офлайн сна (+50/ч за уровень)
+  const totalHourlyProfit = this.profitPerHour + ((this.offlineMiningLevel - 1) * 50);
+  
+  if (totalHourlyProfit > 0) {
+    const profitPerSecond = totalHourlyProfit / 3600;
     const earnedOffline = Math.floor(activeOfflineSeconds * profitPerSecond);
     
     this.balance += earnedOffline;
     this.totalEarned += earnedOffline;
   }
 
-  const energyRecoveryRate = 3; 
-  const recoveredEnergy = secondsOffline * energyRecoveryRate;
+  // Полное восстановление бака занимает строго 3 часа (10800 секунд)
+  const recoveryPerSecond = this.maxEnergy / 10800;
+  const recoveredEnergy = secondsOffline * recoveryPerSecond;
   this.energy = Math.min(this.maxEnergy, this.energy + recoveredEnergy);
 
   this.lastSync = now;
@@ -99,10 +105,25 @@ const User = mongoose.model('User', UserSchema);
 // РАЗДЕЛ 3: ИГРОВЫЕ ЭНДПОИНТЫ API (EXPRESS ROUTES)
 // =========================================================================
 
-// 1. СИНХРОНИЗАЦИЯ ДАННЫХ ИГРОКА ПРИ ВХОДЕ В TAP GAME
-// =========================================================================
-// НОВЫЙ РОУТ: УЛУЧШЕНИЕ И СОХРАНЕНИЕ БУСТОВ ЛАБОРАТОРИИ УЛЬЯ
-// =========================================================================
+// 1. ИСПРАВЛЕНО: СИНХРОНИЗАЦИЯ ДАННЫХ ИГРОКА ПРИ ВХОДЕ В TAP GAME
+app.post('/api/user/sync', async (req, res) => {
+  try {
+    const { telegramId } = req.body;
+    let user = await User.findOne({ telegramId });
+    
+    if (!user) {
+      user = new User({ telegramId });
+    }
+
+    user.calculateOfflineProgress();
+    await user.save();
+    res.json({ success: true, user });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 2. ИСПРАВЛЕНО: УЛУЧШЕНИЕ И СИНХРОННОЕ СОХРАНЕНИЕ БУСТОВ ЛАБОРАТОРИИ УЛЬЯ В БАЗУ
 app.post('/api/user/upgrade-stat', async (req, res) => {
   try {
     const { telegramId, type, cost } = req.body;
@@ -123,12 +144,9 @@ app.post('/api/user/upgrade-stat', async (req, res) => {
       user.multitapLevel += 1;
     } else if (type === 'energy') {
       user.energyLimitLevel += 1;
-      user.maxEnergy += 500; // Увеличиваем бак на 500 единиц
+      user.maxEnergy += 500; // Повышаем лимит бака на 500 монет
     } else if (type === 'offline') {
-      // Так как в схеме нет прямого поля offlineMiningLevel, мы используем встроенное поле cipherClaimedToday как заглушку, 
-      // либо в схеме пользователя у нас за это отвечает переменная dailyStreak/уровни. 
-      // Для точного соответствия вашей схеме Mongoose, увеличим уровень energyLimitLevel или сохраним в лимит
-      user.dailyStreak = (user.dailyStreak || 0) + 1; // Используем как уровень офлайн майнинга для хранения
+      user.offlineMiningLevel += 1; // Повышаем технологию офлайн сна пчелы
     }
 
     await user.save();
@@ -138,7 +156,7 @@ app.post('/api/user/upgrade-stat', async (req, res) => {
   }
 });
 
-// 2. ОБРАБОТКА ПАКЕТА КЛИКОВ (АНТИЧИТ + АПДЕЙТ РАНГА ПЧЕЛЫ)
+// 3. ОБРАБОТКА ПАКЕТА КЛИКОВ (АНТИЧИТ + АПДЕЙТ РАНГА ПЧЕЛЫ НА СЕРВЕРЕ)
 app.post('/api/user/click', async (req, res) => {
   try {
     const { telegramId, clicksCount } = req.body;
@@ -180,8 +198,7 @@ app.post('/api/user/click', async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
-
-// 3. УЛУЧШЕНИЕ КАРТОЧЕК В РАЗДЕЛЕ «РАЗВИТИЕ СОТ»
+// 4. УЛУЧШЕНИЕ КАРТОЧЕК В РАЗДЕЛЕ «РАЗВИТИЕ СОТ» (МАЙНИНГ БИЗНЕС-СОТ)
 app.post('/api/user/buy-card', async (req, res) => {
   try {
     const { telegramId, cardId } = req.body;
@@ -223,42 +240,7 @@ app.post('/api/user/buy-card', async (req, res) => {
     res.status(500).json({ success: false, error: "Внутренняя ошибка сервера" });
   }
 });
-// 4. СТРИКИ И ЕЖЕДНЕВНЫЙ СБОР НАГРАД КАЛЕНДАРЯ НЕКТАРА
-app.post('/api/user/claim-daily', async (req, res) => {
-  try {
-    const { telegramId } = req.body;
-    const user = await User.findOne({ telegramId });
-    if (!user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
 
-    const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-
-    if (user.lastDailyClaim) {
-      const lastClaimDate = new Date(user.lastDailyClaim);
-      const lastClaimStart = new Date(lastClaimDate.getFullYear(), lastClaimDate.getMonth(), lastClaimDate.getDate()).getTime();
-      const msDiff = todayStart - lastClaimStart;
-      const oneDayMs = 24 * 60 * 60 * 1000;
-
-      if (msDiff === 0) return res.status(400).json({ success: false, error: "Вы уже собрали сегодняшний нектар!" });
-      if (msDiff > oneDayMs) user.dailyStreak = 0; 
-    }
-
-    user.dailyStreak = (user.dailyStreak % 10) + 1;
-    const REWARDS_TABLE = { 1: 500, 2: 1000, 3: 2500, 4: 5000, 5: 15000, 6: 25000, 7: 100000, 8: 500000, 9: 1000000, 10: 5000000 };
-    const prizeCoins = REWARDS_TABLE[user.dailyStreak];
-
-    user.balance += prizeCoins;
-    user.totalEarned += prizeCoins;
-    user.lastDailyClaim = now;
-
-    await user.save();
-    res.json({ success: true, dailyStreak: user.dailyStreak, balance: user.balance });
-  } catch (error) {
-    res.status(500).json({ success: false, error: "Ошибка сервера при обработке стрика наград" });
-  }
-});
-
-// ИЗМЕНЕНО: Новое название игры в корневом адресе
 app.get('/', (req, res) => res.send('API пчелиного кликера Tap Game стабильно работает онлайн! 🐝'));
 
 // =========================================================================
@@ -285,11 +267,10 @@ if (bot) {
           telegramId,
           username,
           referredBy: referredById,
-          balance: referredById ? 5000 : 0 // Даем пчеле +5000 меда при переходе по инвайту
+          balance: referredById ? 5000 : 0 
         });
         await user.save();
 
-        // Начисление бонуса пригласившей пчеле
         if (referredById) {
           const inviter = await User.findOne({ telegramId: referredById });
           if (inviter) {
@@ -301,7 +282,6 @@ if (bot) {
         }
       }
 
-      // ИЗМЕНЕНО: Текст приветствия переведен на пчелиный стиль игры Tap Game
       ctx.reply(`Привет, ${username}! Добро пожаловать в улей Tap Game! 🐝\nНажми на кнопку ниже, чтобы начать собирать нектар и строить соты:`, {
         reply_markup: {
           inline_keyboard: [
@@ -316,13 +296,14 @@ if (bot) {
 }
 
 // =========================================================================
-// РАЗДЕЛ 6: КОННЕКТ К БАЗЕ ДАННЫХ И СИНХРОННЫЙ ЗАПУСК
+// РАЗДЕЛ 6: ИСПРАВЛЕНО: БЕЗОПАСНЫЙ СИНХРОННЫЙ ЗАПУСК БАЗЫ MONGOOSE ИЗ ENV
 // =========================================================================
-const mongoUri = process.env.MONGO_URI || 'mongodb://https://github.com/ds3343366-hue/aaaclickerbackend';
+const fallbackMongo = 'mongodb://127.0.0.1:27017/tap game';
+const mongoUri = process.env.MONGO_URI || fallbackMongo;
 
 mongoose.connect(mongoUri)
   .then(() => {
-    console.log('✅ База данных MongoDB успешно подключена');
+    console.log('✅ База данных MongoDB Atlas успешно подключена');
     
     app.listen(PORT, () => {
       console.log(`🚀 Сервер Express начал слушать порт ${PORT}`);
@@ -338,7 +319,6 @@ mongoose.connect(mongoUri)
     console.error('❌ Сбой при подключении к MongoDB:', err);
   });
 
-// Системные перехватчики, защищающие NodeJS от аварийного отключения
 process.on('unhandledRejection', (reason) => console.error('❌ Ошибка Rejection:', reason));
 process.on('uncaughtException', (err) => console.error('❌ Критическая ошибка Exception:', err));
 
