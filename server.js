@@ -280,8 +280,24 @@ if (bot) {
 }
 
 const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/tap_game';
-mongoose.connect(mongoUri).then(() => {
+mongoose.connect(mongoUri).then(async () => {
   console.log('✅ База данных MongoDB Atlas успешно подключена');
+  
+  // 🔥 ИСПРАВЛЕНО: Сбрасываем старый webhook перед запуском, чтобы бот очнулся!
+  if (bot) {
+    try {
+      await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+      console.log('🧹 Старый Webhook успешно удален. Очередь сообщений очищена.');
+      
+      // Запускаем опрос серверов
+      bot.launch();
+      console.log('🤖 Telegram Бот успешно запущен в режиме Polling!');
+    } catch (botErr) {
+      console.error('Ошибка запуска бота:', botErr);
+    }
+  }
+
   app.listen(PORT, () => console.log(`🚀 Сервер Express начал слушать порт ${PORT}`));
 });
+
 
