@@ -213,31 +213,69 @@ if (bot) {
     try {
       const telegramId = ctx.from.id.toString();
       const username = ctx.from.username || ctx.from.first_name || "Пчёлка";
-      const startPayload = ctx.payload; 
+      const startPayload = ctx.payload || ""; // ИСПРАВЛЕНО: Защита от undefined
 
       let user = await User.findOne({ telegramId });
+      
+      // Если пользователя нет в базе — создаем его
       if (!user) {
         let referredById = null;
+        
+        // Безопасно проверяем реферальный код
         if (startPayload && startPayload.startsWith('ref')) {
-          referredById = startPayload.replace('ref', ''); 
+          referredById = startPayload.replace('ref', '').trim(); 
           if (referredById === telegramId) referredById = null;
         }
-        user = new User({ telegramId, username, referredBy: referredById, balance: referredById ? 5000 : 0 });
+
+        user = new User({ 
+          telegramId, 
+          username, 
+          referredBy: referredById, 
+          balance: referredById ? 5000 : 0,
+          totalEarned: referredById ? 5000 : 0
+        });
         await user.save();
 
+        // Начисляем бонус пригласившему (в отдельном блоке, чтобы не сломать старт новичка)
         if (referredById) {
-          const inviter = await User.findOne({ telegramId: referredById });
-          if (inviter) {
-            inviter.balance += 5000; inviter.totalEarned += 5000;
-            inviter.referrals.push({ userId: telegramId, username: username, bonusClaimed: true });
-            await inviter.save();
+          try {
+            const inviter = await User.findOne({ telegramId: referredById });
+            if (inviter) {
+              inviter.balance += 5000; 
+              inviter.totalEarned += 5000;
+              // Защита от дубликатов в массиве рефералов
+              const alreadyRef = inviter.referrals.some(r => r.userId === telegramId);
+              if (!alreadyRef) {
+                inviter.referrals.push({ userId: telegramId, username: username, bonusClaimed: true });
+              }
+              await inviter.save();
+              
+              // Необязательно: можно тихонько уведомить пригласившего пчеловода
+              bot.telegram.sendMessage(referredById, `🐝 В твой рой вступила новая пчёлка @${username}! Тебе начислено +5000 🍯`).catch(e => console.log("Не удалось отправить уведомление рефереру"));
+            }
+          } catch (refErr) {
+            console.error("Ошибка при обработке пригласившего:", refErr);
           }
         }
       }
+
+      // ГАРАНТИРОВАННЫЙ ОТВЕТ: Сообщение отправится в любом случае!
       ctx.reply(`Привет, ${username}! Добро пожаловать в улей Tap Game! 🐝`, {
-        reply_markup: { inline_keyboard: [[{ text: "Развивать Улей! 🍯", web_app: { url: process.env.FRONTEND_URL || "https://ds3343366-hue.github.io/clicker-frontend/" } }]] }
+        reply_markup: { 
+          inline_keyboard: [[{ 
+            text: "Развивать Улей! 🍯", 
+            web_app: { url: process.env.FRONTEND_URL || "https://ds3343366-hue.github.io/clicker-frontend/" } 
+          }]] 
+        }
       });
-    } catch (err) { console.error("Ошибка бота:", err); }
+
+    } catch (err) { 
+      console.error("Критическая ошибка бота на старте:", err); 
+      // Запасной ответ на случай полной аварии бэкенда
+      ctx.reply("Добро пожаловать в улей! Нажми на кнопку ниже, чтобы запустить игру 🐝", {
+        reply_markup: { inline_keyboard: [[{ text: "Развивать Улей! 🍯", web_app: { url: "https://github.io" } }]] }
+      }).catch(e => console.log("Telegram API Error"));
+    }
   });
 }
 
