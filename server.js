@@ -15,14 +15,13 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
 app.use(cors());
 app.use(express.json());
 
-// ИСПРАВЛЕНО: Добавлены базовые параметры для третьей карты (Crypto Card)
+// Конфигурация карточек (Бизнес-Сот)
 const UPGRADE_CARDS_CONFIG = {
   ceo_card: { basePrice: 100, baseProfit: 10 },
   marketing_card: { basePrice: 500, baseProfit: 45 },
   crypto_card: { basePrice: 2000, baseProfit: 200 }
 };
 
-// Конфигурация для расчета 30 уровней (идентично фронтенду)
 const MAX_LEVELS = 30;
 const BACKEND_LEVELS = Array.from({length: MAX_LEVELS}, (_, i) => Math.floor(5000 * Math.pow(1.22, i)));
 
@@ -51,41 +50,47 @@ const UserSchema = new mongoose.Schema({
   }]
 }, { timestamps: true });
 
+// Метод расчета офлайн прогресса
 UserSchema.methods.calculateOfflineProgress = function() {
   const now = new Date();
-  
   if (!this.lastSync) {
     this.lastSync = now;
-    return;
+    return 0;
   }
 
   const secondsOffline = Math.floor((now - this.lastSync) / 1000);
-  if (secondsOffline < 2) return;
+  // Если прошло меньше 2 секунд, не считаем, чтобы не сбивать миллисекунды при частых кликах
+  if (secondsOffline < 2) return 0;
 
+  // Ограничение офлайна — максимум 3 часа
   const maxOfflineSeconds = 3 * 60 * 60; 
   const activeOfflineSeconds = Math.min(secondsOffline, maxOfflineSeconds);
   
+  // Общий доход = базовый доход от сот + бонус технологии сна
   const totalHourlyProfit = this.profitPerHour + ((this.offlineMiningLevel - 1) * 50);
-  
+  let earnedOffline = 0;
+
   if (totalHourlyProfit > 0) {
     const profitPerSecond = totalHourlyProfit / 3600;
-    const earnedOffline = Math.floor(activeOfflineSeconds * profitPerSecond);
+    earnedOffline = Math.floor(activeOfflineSeconds * profitPerSecond);
     if (earnedOffline > 0) {
       this.balance += earnedOffline;
       this.totalEarned += earnedOffline;
     }
   }
 
-  const recoveryPerSecond = this.maxEnergy / 10800; // 3 часа до максимума
+  // Восстановление энергии (3 часа до макс)
+  const recoveryPerSecond = this.maxEnergy / 10800; 
   const recoveredEnergy = Math.floor(secondsOffline * recoveryPerSecond);
   this.energy = Math.min(this.maxEnergy, this.energy + recoveredEnergy);
 
   this.lastSync = now;
+  return earnedOffline;
 };
 
 const User = mongoose.model('User', UserSchema);
 
-// 1. СИНХРОНИЗАЦИЯ (ВХОД ИГРОКА)
+// 1. СИНХРОНИЗАЦИЯ (ВХОД И ИНТЕРВАЛЬНОЕ ОБНОВЛЕНИЕ)
 app.post('/api/user/sync', async (req, res) => {
   try {
     const { telegramId } = req.body;
@@ -95,15 +100,15 @@ app.post('/api/user/sync', async (req, res) => {
         telegramId, energy: 1000, maxEnergy: 1000, multitapLevel: 1, energyLimitLevel: 1, offlineMiningLevel: 1
       });
     }
-    user.calculateOfflineProgress();
+    const earnedOffline = user.calculateOfflineProgress();
     await user.save();
-    res.json({ success: true, user });
+    res.json({ success: true, user, earnedOffline });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// 2. УЛУЧШЕНИЕ БУСТОВ (ЛАБОРАТОРИЯ)
+// 2. УЛУЧШЕНИЕ БУСТОВ
 app.post('/api/user/upgrade-stat', async (req, res) => {
   try {
     const { telegramId, type, cost } = req.body;
@@ -131,7 +136,7 @@ app.post('/api/user/upgrade-stat', async (req, res) => {
   }
 });
 
-// 3. РОУТ ПАКЕТА КЛИКОВ (АНТИЧИТ)
+// 3. ПАКЕТ КЛИКОВ
 app.post('/api/user/click', async (req, res) => {
   try {
     const { telegramId, clicksCount } = req.body;
@@ -147,7 +152,6 @@ app.post('/api/user/click', async (req, res) => {
     user.balance += coinsEarned;
     user.totalEarned += coinsEarned; 
 
-    // ИСПРАВЛЕНО: Новый динамический расчет уровня до 30 уровня улья
     let calculatedLevel = 1;
     for (let i = 0; i < BACKEND_LEVELS.length; i++) {
       if (user.totalEarned >= BACKEND_LEVELS[i]) {
@@ -166,7 +170,7 @@ app.post('/api/user/click', async (req, res) => {
   }
 });
 
-// 4. ПОКУПКА БИЗНЕС-СОТ (МАЙНИНГ)
+// 4. ПОКУПКА/АПГРЕЙД БИЗНЕС-СОТ
 app.post('/api/user/buy-card', async (req, res) => {
   try {
     const { telegramId, cardId } = req.body;
@@ -185,6 +189,7 @@ app.post('/api/user/buy-card', async (req, res) => {
 
     const currentProfit = currentLevel > 0 ? Math.floor(cardConfig.baseProfit * Math.pow(1.2, currentLevel - 1)) : 0;
     const nextProfit = Math.floor(cardConfig.baseProfit * Math.pow(1.2, currentLevel));
+    
     user.balance -= currentPrice;
     user.profitPerHour += (nextProfit - currentProfit);
 
@@ -201,7 +206,7 @@ app.post('/api/user/buy-card', async (req, res) => {
   }
 });
 
-app.get('/', (req, res) => res.send('API пчелиного кликера Tap Game стабильно работает онлайн! 🐝'));
+app.get('/', (req, res) => res.send('API пчелиного кликера стабильно работает онлайн! 🐝'));
 
 if (bot) {
   bot.start(async (ctx) => {
