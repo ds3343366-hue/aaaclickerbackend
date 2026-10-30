@@ -48,10 +48,19 @@ const UserSchema = new mongoose.Schema({
   }]
 }, { timestamps: true });
 
+// ИСПРАВЛЕНО: Надежный расчет офлайн-прогресса без постоянного сброса таймера
 UserSchema.methods.calculateOfflineProgress = function() {
   const now = new Date();
+  
+  if (!this.lastSync) {
+    this.lastSync = now;
+    return;
+  }
+
   const secondsOffline = Math.floor((now - this.lastSync) / 1000);
-  if (secondsOffline <= 0) return;
+  
+  // Если прошло меньше 2 секунд, выходим без обновления lastSync, чтобы не обнулять накопление
+  if (secondsOffline < 2) return;
 
   const maxOfflineSeconds = 3 * 60 * 60; 
   const activeOfflineSeconds = Math.min(secondsOffline, maxOfflineSeconds);
@@ -61,18 +70,22 @@ UserSchema.methods.calculateOfflineProgress = function() {
   if (totalHourlyProfit > 0) {
     const profitPerSecond = totalHourlyProfit / 3600;
     const earnedOffline = Math.floor(activeOfflineSeconds * profitPerSecond);
-    this.balance += earnedOffline;
-    this.totalEarned += earnedOffline;
+    if (earnedOffline > 0) {
+      this.balance += earnedOffline;
+      this.totalEarned += earnedOffline;
+    }
   }
 
   const recoveryPerSecond = this.maxEnergy / 10800;
-  const recoveredEnergy = secondsOffline * recoveryPerSecond;
+  const recoveredEnergy = Math.floor(secondsOffline * recoveryPerSecond);
   this.energy = Math.min(this.maxEnergy, this.energy + recoveredEnergy);
 
+  // Обновляем метку времени только при реальном расчете разницы времени
   this.lastSync = now;
 };
 
 const User = mongoose.model('User', UserSchema);
+
 // 1. СИНХРОНИЗАЦИЯ (ВХОД ИГРОКА)
 app.post('/api/user/sync', async (req, res) => {
   try {
@@ -84,7 +97,7 @@ app.post('/api/user/sync', async (req, res) => {
       });
     }
     user.calculateOfflineProgress();
-    user.lastSync = new Date(); 
+    // ИСПРАВЛЕНО: Ручное затирание lastSync удалено во всех роутах
     await user.save();
     res.json({ success: true, user });
   } catch (error) {
@@ -113,9 +126,7 @@ app.post('/api/user/upgrade-stat', async (req, res) => {
       user.offlineMiningLevel += 1;
     }
 
-    user.lastSync = new Date();
     await user.save();
-    // ИСПРАВЛЕНО: Теперь возвращаем ПОЛНЫЙ объект user, включая purchasedCards
     res.json({ success: true, user });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -145,15 +156,13 @@ app.post('/api/user/click', async (req, res) => {
     }
     user.level = calculatedLevel;
 
-    user.lastSync = new Date();
     await user.save();
-    
-    // ИСПРАВЛЕНО: Вместо урезанных полей возвращаем ПОЛНЫЙ объект user
     res.json({ success: true, user });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
 // 4. ПОКУПКА БИЗНЕС-СОТ (МАЙНИНГ)
 app.post('/api/user/buy-card', async (req, res) => {
   try {
@@ -182,7 +191,6 @@ app.post('/api/user/buy-card', async (req, res) => {
       user.purchasedCards.push({ cardId: cardId, level: 1 });
     }
 
-    user.lastSync = new Date();
     await user.save();
     res.json({ success: true, user });
   } catch (error) {
@@ -219,7 +227,7 @@ if (bot) {
         }
       }
       ctx.reply(`Привет, ${username}! Добро пожаловать в улей Tap Game! 🐝`, {
-        reply_markup: { inline_keyboard: [[{ text: "Развивать Улей! 🍯", web_app: { url: process.env.FRONTEND_URL || "https://ds3343366-hue.github.io/clicker-frontend" } }]] }
+        reply_markup: { inline_keyboard: [[{ text: "Развивать Улей! 🍯", web_app: { url: process.env.FRONTEND_URL || "https://ds3343366-hue.github.io/clicker-frontend/" } }]] }
       });
     } catch (err) { console.error("Ошибка бота:", err); }
   });
@@ -230,6 +238,4 @@ mongoose.connect(mongoUri).then(() => {
   console.log('✅ База данных MongoDB Atlas успешно подключена');
   app.listen(PORT, () => console.log(`🚀 Сервер Express начал слушать порт ${PORT}`));
 });
-
-
 
