@@ -15,13 +15,16 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
 app.use(cors());
 app.use(express.json());
 
+// ИСПРАВЛЕНО: Добавлены базовые параметры для третьей карты (Crypto Card)
 const UPGRADE_CARDS_CONFIG = {
   ceo_card: { basePrice: 100, baseProfit: 10 },
   marketing_card: { basePrice: 500, baseProfit: 45 },
   crypto_card: { basePrice: 2000, baseProfit: 200 }
 };
 
-const BACKEND_LEVELS = Array.of(5000, 25000, 100000, 1000000);
+// Конфигурация для расчета 30 уровней (идентично фронтенду)
+const MAX_LEVELS = 30;
+const BACKEND_LEVELS = Array.from({length: MAX_LEVELS}, (_, i) => Math.floor(5000 * Math.pow(1.22, i)));
 
 const UserSchema = new mongoose.Schema({
   telegramId: { type: String, required: true, unique: true },
@@ -48,7 +51,6 @@ const UserSchema = new mongoose.Schema({
   }]
 }, { timestamps: true });
 
-// ИСПРАВЛЕНО: Надежный расчет офлайн-прогресса без постоянного сброса таймера
 UserSchema.methods.calculateOfflineProgress = function() {
   const now = new Date();
   
@@ -58,8 +60,6 @@ UserSchema.methods.calculateOfflineProgress = function() {
   }
 
   const secondsOffline = Math.floor((now - this.lastSync) / 1000);
-  
-  // Если прошло меньше 2 секунд, выходим без обновления lastSync, чтобы не обнулять накопление
   if (secondsOffline < 2) return;
 
   const maxOfflineSeconds = 3 * 60 * 60; 
@@ -76,11 +76,10 @@ UserSchema.methods.calculateOfflineProgress = function() {
     }
   }
 
-  const recoveryPerSecond = this.maxEnergy / 10800;
+  const recoveryPerSecond = this.maxEnergy / 10800; // 3 часа до максимума
   const recoveredEnergy = Math.floor(secondsOffline * recoveryPerSecond);
   this.energy = Math.min(this.maxEnergy, this.energy + recoveredEnergy);
 
-  // Обновляем метку времени только при реальном расчете разницы времени
   this.lastSync = now;
 };
 
@@ -97,7 +96,6 @@ app.post('/api/user/sync', async (req, res) => {
       });
     }
     user.calculateOfflineProgress();
-    // ИСПРАВЛЕНО: Ручное затирание lastSync удалено во всех роутах
     await user.save();
     res.json({ success: true, user });
   } catch (error) {
@@ -149,11 +147,16 @@ app.post('/api/user/click', async (req, res) => {
     user.balance += coinsEarned;
     user.totalEarned += coinsEarned; 
 
+    // ИСПРАВЛЕНО: Новый динамический расчет уровня до 30 уровня улья
     let calculatedLevel = 1;
     for (let i = 0; i < BACKEND_LEVELS.length; i++) {
-      if (user.totalEarned >= BACKEND_LEVELS[i]) calculatedLevel = i + 2;
-      else break;
+      if (user.totalEarned >= BACKEND_LEVELS[i]) {
+        calculatedLevel = i + 2;
+      } else {
+        break;
+      }
     }
+    if (calculatedLevel > MAX_LEVELS) calculatedLevel = MAX_LEVELS;
     user.level = calculatedLevel;
 
     await user.save();
