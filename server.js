@@ -43,11 +43,15 @@ const UserSchema = new mongoose.Schema({
   energyLimitLevel: { type: Number, default: 1 }, 
   offlineMiningLevel: { type: Number, default: 1 }, 
   referredBy: { type: String, default: null }, 
+    // Код выше...
   referrals: [{
     userId: { type: String }, 
     username: { type: String },
     bonusClaimed: { type: Boolean, default: false } 
-  }]
+  }],
+  // ИСПРАВЛЕНО: Добавлены поля для Ежедневного Комбо
+  todayCombo: [{ type: String }], // Карты, угаданные за сегодня
+  lastComboDate: { type: String, default: "" } // Дата последнего успешного сбора комбо (ГГГГ-ММ-ДД)
 }, { timestamps: true });
 
 // Метод расчета офлайн прогресса
@@ -203,6 +207,51 @@ app.post('/api/user/buy-card', async (req, res) => {
     res.json({ success: true, user });
   } catch (error) {
     res.status(500).json({ success: false, error: "Ошибка сервера" });
+  }
+});
+
+// 5. ЕЖЕДНЕВНОЕ КОМБО (ПРОВЕРКА ПРИ ПОКУПКЕ)
+// Секретная комбинация на сегодня (можно менять вручную или автоматизировать по дате)
+const CURRENT_SECRET_COMBO = ['ceo_card', 'crypto_card']; 
+const COMBO_REWARD = 250000; // Награда: 250,000 мёда
+
+app.post('/api/user/check-combo', async (req, res) => {
+  try {
+    const { telegramId, cardId } = req.body;
+    const user = await User.findOne({ telegramId });
+    if (!user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
+
+    const todayStr = new Date().toISOString().split('T')[0]; // Получаем дату в формате "2026-10-31"
+
+    // Если наступил новый день, сбрасываем вчерашний прогресс комбо
+    if (user.lastComboDate !== todayStr && user.todayCombo.length > 0 && user.lastComboDate !== "COMPLETED_" + todayStr) {
+      user.todayCombo = [];
+    }
+
+    // Если комбо за сегодня уже полностью собрано
+    if (user.lastComboDate === "COMPLETED_" + todayStr) {
+      return res.json({ success: true, user, msg: "Комбо на сегодня уже выполнено!" });
+    }
+
+    // Проверяем, является ли купленная карта частью секретного комбо
+    if (CURRENT_SECRET_COMBO.includes(cardId) && !user.todayCombo.includes(cardId)) {
+      user.todayCombo.push(cardId);
+      user.lastComboDate = todayStr;
+
+      // Если игрок собрал все карты из секретного списка
+      if (user.todayCombo.length === CURRENT_SECRET_COMBO.length) {
+        user.balance += COMBO_REWARD;
+        user.totalEarned += COMBO_REWARD;
+        user.lastComboDate = "COMPLETED_" + todayStr; // Помечаем день как выполненный
+        await user.save();
+        return res.json({ success: true, user, comboCompleted: true, reward: COMBO_REWARD });
+      }
+    }
+
+    await user.save();
+    res.json({ success: true, user, comboCompleted: false });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
