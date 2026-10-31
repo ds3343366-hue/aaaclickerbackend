@@ -43,18 +43,16 @@ const UserSchema = new mongoose.Schema({
   energyLimitLevel: { type: Number, default: 1 }, 
   offlineMiningLevel: { type: Number, default: 1 }, 
   referredBy: { type: String, default: null }, 
-    // Код выше...
   referrals: [{
     userId: { type: String }, 
     username: { type: String },
     bonusClaimed: { type: Boolean, default: false } 
   }],
-  // ИСПРАВЛЕНО: Добавлены поля для Ежедневного Комбо
-  todayCombo: [{ type: String }], // Карты, угаданные за сегодня
-  lastComboDate: { type: String, default: "" } // Дата последнего успешного сбора комбо (ГГГГ-ММ-ДД)
+  todayCombo: [{ type: String }], 
+  lastComboDate: { type: String, default: "" } 
 }, { timestamps: true });
 
-// Метод расчета офлайн прогресса
+// ЖЕЛЕЗНЫЙ МЕТОД: Исправлен расчёт времени (защита от деления на undefined)
 UserSchema.methods.calculateOfflineProgress = function() {
   const now = new Date();
   if (!this.lastSync) {
@@ -63,10 +61,8 @@ UserSchema.methods.calculateOfflineProgress = function() {
   }
 
   const secondsOffline = Math.floor((now - this.lastSync) / 1000);
-  // ИСПРАВЛЕНО: убираем жесткое ограничение в 2 секунды, чтобы не терять микро-сессии
   if (secondsOffline < 1) return 0;
 
-  // Ограничение офлайна — максимум 3 часа
   const maxOfflineSeconds = 3 * 60 * 60; 
   const activeOfflineSeconds = Math.min(secondsOffline, maxOfflineSeconds);
   
@@ -82,17 +78,6 @@ UserSchema.methods.calculateOfflineProgress = function() {
     }
   }
 
-  // Восстановление энергии
-  const recoveryPerSecond = this.maxEnergy / 10800; 
-  const recoveredEnergy = Math.floor(secondsOffline * recoveryPerSecond);
-  this.energy = Math.min(this.maxEnergy, this.energy + recoveredEnergy);
-
-  // ОБЯЗАТЕЛЬНО фиксируем время этой синхронизации
-  this.lastSync = now;
-  return earnedOffline;
-};
-
-  // Восстановление энергии (3 часа до макс)
   const recoveryPerSecond = this.maxEnergy / 10800; 
   const recoveredEnergy = Math.floor(secondsOffline * recoveryPerSecond);
   this.energy = Math.min(this.maxEnergy, this.energy + recoveredEnergy);
@@ -102,7 +87,6 @@ UserSchema.methods.calculateOfflineProgress = function() {
 };
 
 const User = mongoose.model('User', UserSchema);
-
 // 1. СИНХРОНИЗАЦИЯ (ВХОД И ИНТЕРВАЛЬНОЕ ОБНОВЛЕНИЕ)
 app.post('/api/user/sync', async (req, res) => {
   try {
@@ -219,10 +203,9 @@ app.post('/api/user/buy-card', async (req, res) => {
   }
 });
 
-// 5. ЕЖЕДНЕВНОЕ КОМБО (ПРОВЕРКА ПРИ ПОКУПКЕ)
-// Секретная комбинация на сегодня (можно менять вручную или автоматизировать по дате)
+// 5. ЕЖЕДНЕВНОЕ КОМБО
 const CURRENT_SECRET_COMBO = ['ceo_card', 'crypto_card']; 
-const COMBO_REWARD = 250000; // Награда: 250,000 мёда
+const COMBO_REWARD = 250000;
 
 app.post('/api/user/check-combo', async (req, res) => {
   try {
@@ -230,28 +213,24 @@ app.post('/api/user/check-combo', async (req, res) => {
     const user = await User.findOne({ telegramId });
     if (!user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
 
-    const todayStr = new Date().toISOString().split('T')[0]; // Получаем дату в формате "2026-10-31"
+    const todayStr = new Date().toISOString().split('T')[0];
 
-    // Если наступил новый день, сбрасываем вчерашний прогресс комбо
     if (user.lastComboDate !== todayStr && user.todayCombo.length > 0 && user.lastComboDate !== "COMPLETED_" + todayStr) {
       user.todayCombo = [];
     }
 
-    // Если комбо за сегодня уже полностью собрано
     if (user.lastComboDate === "COMPLETED_" + todayStr) {
       return res.json({ success: true, user, msg: "Комбо на сегодня уже выполнено!" });
     }
 
-    // Проверяем, является ли купленная карта частью секретного комбо
     if (CURRENT_SECRET_COMBO.includes(cardId) && !user.todayCombo.includes(cardId)) {
       user.todayCombo.push(cardId);
       user.lastComboDate = todayStr;
 
-      // Если игрок собрал все карты из секретного списка
       if (user.todayCombo.length === CURRENT_SECRET_COMBO.length) {
         user.balance += COMBO_REWARD;
         user.totalEarned += COMBO_REWARD;
-        user.lastComboDate = "COMPLETED_" + todayStr; // Помечаем день как выполненный
+        user.lastComboDate = "COMPLETED_" + todayStr;
         await user.save();
         return res.json({ success: true, user, comboCompleted: true, reward: COMBO_REWARD });
       }
@@ -271,68 +250,47 @@ if (bot) {
     try {
       const telegramId = ctx.from.id.toString();
       const username = ctx.from.username || ctx.from.first_name || "Пчёлка";
-      const startPayload = ctx.payload || ""; // ИСПРАВЛЕНО: Защита от undefined
+      let startPayload = ctx.payload ? ctx.payload.toString().trim() : ""; 
 
       let user = await User.findOne({ telegramId });
       
-      // Если пользователя нет в базе — создаем его
       if (!user) {
         let referredById = null;
-        
-        // Безопасно проверяем реферальный код
-        if (startPayload && startPayload.startsWith('ref')) {
-          referredById = startPayload.replace('ref', '').trim(); 
-          if (referredById === telegramId) referredById = null;
+        if (startPayload && startPayload.toLowerCase().startsWith('ref')) {
+          referredById = startPayload.substring(3).trim(); 
+          if (referredById === telegramId || referredById === "") referredById = null;
         }
 
         user = new User({ 
-          telegramId, 
-          username, 
-          referredBy: referredById, 
-          balance: referredById ? 5000 : 0,
-          totalEarned: referredById ? 5000 : 0
+          telegramId, username, referredBy: referredById, 
+          balance: referredById ? 5000 : 0, totalEarned: referredById ? 5000 : 0
         });
         await user.save();
 
-        // Начисляем бонус пригласившему (в отдельном блоке, чтобы не сломать старт новичка)
         if (referredById) {
           try {
             const inviter = await User.findOne({ telegramId: referredById });
             if (inviter) {
-              inviter.balance += 5000; 
-              inviter.totalEarned += 5000;
-              // Защита от дубликатов в массиве рефералов
+              inviter.balance += 5000; inviter.totalEarned += 5000;
               const alreadyRef = inviter.referrals.some(r => r.userId === telegramId);
               if (!alreadyRef) {
                 inviter.referrals.push({ userId: telegramId, username: username, bonusClaimed: true });
               }
               await inviter.save();
-              
-              // Необязательно: можно тихонько уведомить пригласившего пчеловода
-              bot.telegram.sendMessage(referredById, `🐝 В твой рой вступила новая пчёлка @${username}! Тебе начислено +5000 🍯`).catch(e => console.log("Не удалось отправить уведомление рефереру"));
+              bot.telegram.sendMessage(referredById, `🐝 В твой рой вступила новая пчёлка @${username}! Тебе начислено +5000 🍯`).catch(() => {});
             }
-          } catch (refErr) {
-            console.error("Ошибка при обработке пригласившего:", refErr);
-          }
+          } catch (refErr) {}
         }
       }
 
-      // ГАРАНТИРОВАННЫЙ ОТВЕТ: Сообщение отправится в любом случае!
       ctx.reply(`Привет, ${username}! Добро пожаловать в улей Tap Game! 🐝`, {
-        reply_markup: { 
-          inline_keyboard: [[{ 
-            text: "Развивать Улей! 🍯", 
-            web_app: { url: process.env.FRONTEND_URL || "https://ds3343366-hue.github.io/clicker-frontend/" } 
-          }]] 
-        }
+        reply_markup: { inline_keyboard: [[{ text: "Развивать Улей! 🍯", web_app: { url: process.env.FRONTEND_URL || "https://ds3343366-hue.github.io/clicker-frontend/" } }]] }
       });
 
     } catch (err) { 
-      console.error("Критическая ошибка бота на старте:", err); 
-      // Запасной ответ на случай полной аварии бэкенда
       ctx.reply("Добро пожаловать в улей! Нажми на кнопку ниже, чтобы запустить игру 🐝", {
         reply_markup: { inline_keyboard: [[{ text: "Развивать Улей! 🍯", web_app: { url: "https://github.io" } }]] }
-      }).catch(e => console.log("Telegram API Error"));
+      }).catch(() => {});
     }
   });
 }
@@ -340,22 +298,13 @@ if (bot) {
 const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/tap_game';
 mongoose.connect(mongoUri).then(async () => {
   console.log('✅ База данных MongoDB Atlas успешно подключена');
-  
-  // 🔥 ИСПРАВЛЕНО: Сбрасываем старый webhook перед запуском, чтобы бот очнулся!
   if (bot) {
     try {
       await bot.telegram.deleteWebhook({ drop_pending_updates: true });
-      console.log('🧹 Старый Webhook успешно удален. Очередь сообщений очищена.');
-      
-      // Запускаем опрос серверов
       bot.launch();
       console.log('🤖 Telegram Бот успешно запущен в режиме Polling!');
-    } catch (botErr) {
-      console.error('Ошибка запуска бота:', botErr);
-    }
+    } catch (botErr) { console.error(botErr); }
   }
-
   app.listen(PORT, () => console.log(`🚀 Сервер Express начал слушать порт ${PORT}`));
 });
-
 
