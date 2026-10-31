@@ -63,14 +63,13 @@ UserSchema.methods.calculateOfflineProgress = function() {
   }
 
   const secondsOffline = Math.floor((now - this.lastSync) / 1000);
-  // Если прошло меньше 2 секунд, не считаем, чтобы не сбивать миллисекунды при частых кликах
-  if (secondsOffline < 2) return 0;
+  // ИСПРАВЛЕНО: убираем жесткое ограничение в 2 секунды, чтобы не терять микро-сессии
+  if (secondsOffline < 1) return 0;
 
   // Ограничение офлайна — максимум 3 часа
   const maxOfflineSeconds = 3 * 60 * 60; 
   const activeOfflineSeconds = Math.min(secondsOffline, maxOfflineSeconds);
   
-  // Общий доход = базовый доход от сот + бонус технологии сна
   const totalHourlyProfit = this.profitPerHour + ((this.offlineMiningLevel - 1) * 50);
   let earnedOffline = 0;
 
@@ -82,6 +81,16 @@ UserSchema.methods.calculateOfflineProgress = function() {
       this.totalEarned += earnedOffline;
     }
   }
+
+  // Восстановление энергии
+  const recoveryPerSecond = this.maxEnergy / 10800; 
+  const recoveredEnergy = Math.floor(secondsOffline * recoveryPerSecond);
+  this.energy = Math.min(this.maxEnergy, this.energy + recoveredEnergy);
+
+  // ОБЯЗАТЕЛЬНО фиксируем время этой синхронизации
+  this.lastSync = now;
+  return earnedOffline;
+};
 
   // Восстановление энергии (3 часа до макс)
   const recoveryPerSecond = this.maxEnergy / 10800; 
