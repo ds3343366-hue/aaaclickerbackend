@@ -15,7 +15,7 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
 app.use(cors());
 app.use(express.json());
 
-// Конфигурация карточек (Бизнес-Сот)
+// Конфигурация карточек улья
 const UPGRADE_CARDS_CONFIG = {
   ceo_card: { basePrice: 100, baseProfit: 10 },
   marketing_card: { basePrice: 500, baseProfit: 45 },
@@ -25,6 +25,7 @@ const UPGRADE_CARDS_CONFIG = {
 const MAX_LEVELS = 30;
 const BACKEND_LEVELS = Array.from({length: MAX_LEVELS}, (_, i) => Math.floor(5000 * Math.pow(1.22, i)));
 
+// ИСПРАВЛЕНО: Схема теперь имеет идеальную вложенность и закрывающие скобки
 const UserSchema = new mongoose.Schema({
   telegramId: { type: String, required: true, unique: true },
   username: { type: String, default: '' },
@@ -49,12 +50,10 @@ const UserSchema = new mongoose.Schema({
     bonusClaimed: { type: Boolean, default: false } 
   }],
   todayCombo: [{ type: String }], 
-  lastComboDate: { type: String, default: "" } 
-}, { timestamps: true });
-  walletAddress: { type: String, default: "" }
+  lastComboDate: { type: String, default: "" },
+  walletAddress: { type: String, default: "" } // Поле кошелька теперь на своем месте внутри объекта!
 }, { timestamps: true });
 
-// ЖЕЛЕЗНЫЙ МЕТОД: Исправлен расчёт времени (защита от деления на undefined)
 UserSchema.methods.calculateOfflineProgress = function() {
   const now = new Date();
   if (!this.lastSync) {
@@ -215,7 +214,7 @@ app.post('/api/user/check-combo', async (req, res) => {
     const user = await User.findOne({ telegramId });
     if (!user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
 
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = new Date().toISOString().split('T');
 
     if (user.lastComboDate !== todayStr && user.todayCombo.length > 0 && user.lastComboDate !== "COMPLETED_" + todayStr) {
       user.todayCombo = [];
@@ -304,12 +303,12 @@ if (bot) {
       }
 
       ctx.reply(`Привет, ${username}! Добро пожаловать в улей Tap Game! 🐝`, {
-        reply_markup: { inline_keyboard: [[{ text: "Развивать Улей! 🍯", web_app: { url: process.env.FRONTEND_URL || "https://github.io" } }]] }
+        reply_markup: { inline_keyboard: [[{ text: "Развивать Улей! 🍯", web_app: { url: process.env.FRONTEND_URL || "https://ds3343366-hue.github.io/clicker-frontend/" } }]] }
       });
 
     } catch (err) { 
       ctx.reply("Добро пожаловать в улей! Нажми на кнопку ниже, чтобы запустить игру 🐝", {
-        reply_markup: { inline_keyboard: [[{ text: "Развивать Улей! 🍯", web_app: { url: "https://ds3343366-hue.github.io/clicker-frontend/" } }]] }
+        reply_markup: { inline_keyboard: [[{ text: "Развивать Улей! 🍯", web_app: { url: "https://github.io" } }]] }
       }).catch(() => {});
     }
   });
