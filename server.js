@@ -51,6 +51,8 @@ const UserSchema = new mongoose.Schema({
   todayCombo: [{ type: String }], 
   lastComboDate: { type: String, default: "" } 
 }, { timestamps: true });
+  walletAddress: { type: String, default: "" }
+}, { timestamps: true });
 
 // ЖЕЛЕЗНЫЙ МЕТОД: Исправлен расчёт времени (защита от деления на undefined)
 UserSchema.methods.calculateOfflineProgress = function() {
@@ -238,6 +240,24 @@ app.post('/api/user/check-combo', async (req, res) => {
 
     await user.save();
     res.json({ success: true, user, comboCompleted: false });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 6. СОХРАНЕНИЕ КРИПТОКОШЕЛЬКА (TON CONNECT)
+app.post('/api/user/save-wallet', async (req, res) => {
+  try {
+    const { telegramId, walletAddress } = req.body;
+    if (!telegramId) return res.status(400).json({ success: false, error: "Не указан telegramId" });
+
+    const user = await User.findOne({ telegramId });
+    if (!user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
+
+    user.walletAddress = walletAddress || "";
+    await user.save();
+
+    res.json({ success: true, user, msg: "Кошелек успешно привязан!" });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
