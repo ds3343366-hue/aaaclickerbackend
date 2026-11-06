@@ -62,11 +62,8 @@ const UserSchema = new mongoose.Schema({
 UserSchema.methods.recalculateLevel = function() {
   let targetLevel = 1;
   for (let i = 0; i < BACKEND_LEVELS.length; i++) {
-    if (this.totalEarned >= BACKEND_LEVELS[i]) {
-      targetLevel = i + 2; 
-    } else {
-      break;
-    }
+    if (this.totalEarned >= BACKEND_LEVELS[i]) targetLevel = i + 2;
+    else break;
   }
   if (targetLevel > MAX_LEVELS) targetLevel = MAX_LEVELS;
   this.level = targetLevel;
@@ -144,12 +141,12 @@ app.post('/api/user/click', async (req, res) => {
     res.json({ success: true, user });
   } catch (error) { res.status(500).json({ success: false, error: error.message }); }
 });
+
 app.post('/api/user/upgrade-stat', async (req, res) => {
   try {
     const { telegramId, type, cost } = req.body;
     let user = await User.findOne({ telegramId });
-    if (!user) user = new User({ telegramId, balance: 1000 });
-    if (user.level >= 30) return res.status(400).json({ success: false, error: "Макс уровень!" });
+    if (!user) return res.status(404).json({ success: false, error: "Профиль не найден" });
     user.calculateOfflineProgress();
     if (user.balance < (cost || 0)) return res.status(400).json({ success: false, error: "Не хватает мёда!" });
     user.balance -= (cost || 0);
@@ -167,8 +164,7 @@ app.post('/api/user/buy-card', async (req, res) => {
     const { telegramId, cardId } = req.body;
     const cardConfig = UPGRADE_CARDS_CONFIG[cardId];
     let user = await User.findOne({ telegramId });
-    if (!user) user = new User({ telegramId, balance: 500 });
-    if (user.level >= 30) return res.status(400).json({ success: false, error: "Макс уровень!" });
+    if (!user) return res.status(404).json({ success: false, error: "Профиль не найден" });
     user.calculateOfflineProgress();
     const userCardIndex = user.purchasedCards.findIndex(c => c.cardId === cardId);
     const currentLevel = userCardIndex !== -1 ? user.purchasedCards[userCardIndex].level : 0;
@@ -207,8 +203,8 @@ app.post('/api/user/check-combo', async (req, res) => {
       user.todayCombo.push(cardId);
       if (user.todayCombo.length === CURRENT_SECRET_COMBO.length) {
         user.balance += COMBO_REWARD;
-        user.totalEarned += COMBO_REWARD; // Прямое начисление к общему доходу
-        user.lastComboDate = "COMPLETED_" + todayStr; // Одноразовый жесткий блок
+        user.totalEarned += COMBO_REWARD;
+        user.lastComboDate = "COMPLETED_" + todayStr;
       }
     }
     user.recalculateLevel();
@@ -230,9 +226,28 @@ app.post('/api/user/save-wallet', async (req, res) => {
 
 app.get('/', (req, res) => res.send('API пчелиного GameFi кликера стабильно работает онлайн! 🐝'));
 
+if (bot) {
+  bot.start((ctx) => {
+    const username = ctx.from.username || ctx.from.first_name || "Пчёлка";
+    const frontendUrl = process.env.FRONTEND_URL || "https://ds3343366-hue.github.io/clicker-frontend/";
+    ctx.reply(`Привет, ${username}! Добро пожаловать в улей Tap Game! 🐝`, {
+      reply_markup: { inline_keyboard: [[{ text: "Развивать Улей! 🍯", web_app: { url: frontendUrl } }]] }
+    });
+  });
+}
+
 const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/tap_game';
 mongoose.connect(mongoUri).then(() => {
   console.log('✅ База данных MongoDB Atlas успешно подключена');
-  app.listen(PORT, () => console.log(`🚀 Сервер на порту ${PORT}`));
+  app.listen(PORT, () => {
+    console.log(`🚀 Сервер на порту ${PORT}`);
+    if (bot) {
+      setTimeout(() => {
+        bot.telegram.deleteWebhook({ drop_pending_updates: true })
+          .then(() => { bot.launch().then(() => console.log('🤖 Бот успешно запущен без конфликтов!')); })
+          .catch(e => console.error(e.message));
+      }, 4000);
+    }
+  });
 });
 
