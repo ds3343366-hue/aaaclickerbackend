@@ -12,6 +12,7 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
   bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 }
 
+// Глобальные Middleware
 app.use(cors());
 app.use(express.json());
 
@@ -25,7 +26,7 @@ const UPGRADE_CARDS_CONFIG = {
 const MAX_LEVELS = 30;
 const BACKEND_LEVELS = Array.from({length: MAX_LEVELS}, (_, i) => Math.floor(5000 * Math.pow(1.22, i)));
 
-// ИСПРАВЛЕНО: Схема теперь имеет идеальную вложенность и закрывающие скобки
+// Схема пользователя MongoDB
 const UserSchema = new mongoose.Schema({
   telegramId: { type: String, required: true, unique: true },
   username: { type: String, default: '' },
@@ -51,9 +52,10 @@ const UserSchema = new mongoose.Schema({
   }],
   todayCombo: [{ type: String }], 
   lastComboDate: { type: String, default: "" },
-  walletAddress: { type: String, default: "" } // Поле кошелька теперь на своем месте внутри объекта!
+  walletAddress: { type: String, default: "" }
 }, { timestamps: true });
 
+// Метод расчета офлайн-дохода и регенерации энергии
 UserSchema.methods.calculateOfflineProgress = function() {
   const now = new Date();
   if (!this.lastSync) {
@@ -64,7 +66,7 @@ UserSchema.methods.calculateOfflineProgress = function() {
   const secondsOffline = Math.floor((now - this.lastSync) / 1000);
   if (secondsOffline < 1) return 0;
 
-  const maxOfflineSeconds = 3 * 60 * 60; 
+  const maxOfflineSeconds = 3 * 60 * 60; // Лимит 3 часа
   const activeOfflineSeconds = Math.min(secondsOffline, maxOfflineSeconds);
   
   const totalHourlyProfit = this.profitPerHour + ((this.offlineMiningLevel - 1) * 50);
@@ -79,7 +81,7 @@ UserSchema.methods.calculateOfflineProgress = function() {
     }
   }
 
-  const recoveryPerSecond = this.maxEnergy / 10800; 
+  const recoveryPerSecond = this.maxEnergy / 10800; // Полное восстановление за 3 часа
   const recoveredEnergy = Math.floor(secondsOffline * recoveryPerSecond);
   this.energy = Math.min(this.maxEnergy, this.energy + recoveredEnergy);
 
@@ -88,16 +90,29 @@ UserSchema.methods.calculateOfflineProgress = function() {
 };
 
 const User = mongoose.model('User', UserSchema);
+// === API НАПРАВЛЕНИЯ (ROUTES) ===
+
 // 1. СИНХРОНИЗАЦИЯ (ВХОД И ИНТЕРВАЛЬНОЕ ОБНОВЛЕНИЕ)
 app.post('/api/user/sync', async (req, res) => {
   try {
-    const { telegramId } = req.body;
+    const { telegramId, username } = req.body;
+    if (!telegramId) return res.status(400).json({ success: false, error: "Не указан telegramId" });
+
     let user = await User.findOne({ telegramId });
     if (!user) {
       user = new User({ 
-        telegramId, energy: 1000, maxEnergy: 1000, multitapLevel: 1, energyLimitLevel: 1, offlineMiningLevel: 1
+        telegramId, 
+        username: username || "Пчёлка",
+        energy: 1000, 
+        maxEnergy: 1000, 
+        multitapLevel: 1, 
+        energyLimitLevel: 1, 
+        offlineMiningLevel: 1
       });
+    } else if (username && user.username !== username) {
+      user.username = username; // Обновляем имя, если изменилось в ТГ
     }
+
     const earnedOffline = user.calculateOfflineProgress();
     await user.save();
     res.json({ success: true, user, earnedOffline });
@@ -110,6 +125,8 @@ app.post('/api/user/sync', async (req, res) => {
 app.post('/api/user/upgrade-stat', async (req, res) => {
   try {
     const { telegramId, type, cost } = req.body;
+    if (!telegramId || !type || !cost) return res.status(400).json({ success: false, error: "Неполные данные" });
+
     const user = await User.findOne({ telegramId });
     if (!user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
 
@@ -125,6 +142,8 @@ app.post('/api/user/upgrade-stat', async (req, res) => {
       user.energy = user.maxEnergy;
     } else if (type === 'offline') {
       user.offlineMiningLevel += 1;
+    } else {
+      return res.status(400).json({ success: false, error: "Неверный тип буста" });
     }
 
     await user.save();
@@ -138,12 +157,16 @@ app.post('/api/user/upgrade-stat', async (req, res) => {
 app.post('/api/user/click', async (req, res) => {
   try {
     const { telegramId, clicksCount } = req.body;
+    if (!telegramId || typeof clicksCount !== 'number' || clicksCount <= 0) {
+      return res.status(400).json({ success: false, error: "Неверное количество кликов" });
+    }
+
     const user = await User.findOne({ telegramId });
-    if (!user) return res.status(404).json({ error: "Пользователь не найден" });
+    if (!user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
 
     user.calculateOfflineProgress();
     const requiredEnergy = clicksCount * user.multitapLevel;
-    if (user.energy < requiredEnergy) return res.status(400).json({ error: "Недостаточно энергии!" });
+    if (user.energy < requiredEnergy) return res.status(400).json({ success: false, error: "Недостаточно энергии!" });
 
     user.energy -= requiredEnergy;
     const coinsEarned = clicksCount * user.multitapLevel;
@@ -183,7 +206,7 @@ app.post('/api/user/buy-card', async (req, res) => {
     const currentLevel = userCardIndex !== -1 ? user.purchasedCards[userCardIndex].level : 0;
     const currentPrice = Math.floor(cardConfig.basePrice * Math.pow(1.5, currentLevel));
 
-    if (user.balance < currentPrice) return res.status(400).json({ success: false, error: "Не хватает меда!" });
+    if (user.balance < currentPrice) return res.status(400).json({ success: false, error: "Не хватает мёда!" });
 
     const currentProfit = currentLevel > 0 ? Math.floor(cardConfig.baseProfit * Math.pow(1.2, currentLevel - 1)) : 0;
     const nextProfit = Math.floor(cardConfig.baseProfit * Math.pow(1.2, currentLevel));
@@ -200,10 +223,9 @@ app.post('/api/user/buy-card', async (req, res) => {
     await user.save();
     res.json({ success: true, user });
   } catch (error) {
-    res.status(500).json({ success: false, error: "Ошибка сервера" });
+    res.status(500).json({ success: false, error: "Ошибка сервера при покупке" });
   }
 });
-
 // 5. ЕЖЕДНЕВНОЕ КОМБО
 const CURRENT_SECRET_COMBO = ['ceo_card', 'crypto_card']; 
 const COMBO_REWARD = 250000;
@@ -211,17 +233,19 @@ const COMBO_REWARD = 250000;
 app.post('/api/user/check-combo', async (req, res) => {
   try {
     const { telegramId, cardId } = req.body;
+    if (!telegramId || !cardId) return res.status(400).json({ success: false, error: "Неполные параметры" });
+
     const user = await User.findOne({ telegramId });
     if (!user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
 
-    const todayStr = new Date().toISOString().split('T');
+    const todayStr = new Date().toISOString().split('T')[0]; // Фикс: берем строковое значение даты
 
     if (user.lastComboDate !== todayStr && user.todayCombo.length > 0 && user.lastComboDate !== "COMPLETED_" + todayStr) {
       user.todayCombo = [];
     }
 
     if (user.lastComboDate === "COMPLETED_" + todayStr) {
-      return res.json({ success: true, user, msg: "Комбо на сегодня уже выполнено!" });
+      return res.json({ success: true, user, msg: "Комбо на сегодня уже выполнено!", comboCompleted: true });
     }
 
     if (CURRENT_SECRET_COMBO.includes(cardId) && !user.todayCombo.includes(cardId)) {
@@ -264,6 +288,7 @@ app.post('/api/user/save-wallet', async (req, res) => {
 
 app.get('/', (req, res) => res.send('API пчелиного кликера стабильно работает онлайн! 🐝'));
 
+// === РАБОТА С ТЕЛЕГРАМ БОТОМ ===
 if (bot) {
   bot.start(async (ctx) => {
     try {
@@ -308,12 +333,13 @@ if (bot) {
 
     } catch (err) { 
       ctx.reply("Добро пожаловать в улей! Нажми на кнопку ниже, чтобы запустить игру 🐝", {
-        reply_markup: { inline_keyboard: [[{ text: "Развивать Улей! 🍯", web_app: { url: "https://github.io" } }]] }
+        reply_markup: { inline_keyboard: [[{ text: "Развивать Улей! 🍯", web_app: { url: process.env.FRONTEND_URL || "https://ds3343366-hue.github.io/clicker-frontend/" } }]] }
       }).catch(() => {});
     }
   });
 }
 
+// === ПОДКЛЮЧЕНИЕ К БАЗЕ И СТАРТ СЕРВЕРА ===
 const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/tap_game';
 mongoose.connect(mongoUri).then(async () => {
   console.log('✅ База данных MongoDB Atlas успешно подключена');
@@ -325,5 +351,7 @@ mongoose.connect(mongoUri).then(async () => {
     } catch (botErr) { console.error(botErr); }
   }
   app.listen(PORT, () => console.log(`🚀 Сервер Express начал слушать порт ${PORT}`));
+}).catch(err => {
+  console.error('❌ Критическая ошибка подключения к MongoDB:', err);
 });
 
