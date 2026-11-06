@@ -12,16 +12,13 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
   bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 }
 
-// === КРИТИЧЕСКИЙ ФИКС CORS ДЛЯ РАБОТЫ КНОПОК И TON CONNECT ===
+// === ИСПРАВЛЕННЫЙ КОРРЕКТНЫЙ БЛОК CORS (УБРАНА ОШИБКА ДЕПЛОЯ) ===
 app.use(cors({
-  origin: '*', // Разрешаем запросы абсолютно со всех доменов (включая GitHub Pages)
+  origin: '*', 
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
   credentials: true
 }));
-
-// Перехватываем OPTIONS запросы от TON Connect, чтобы они не вешали фронтенд
-app.options('*', cors());
 
 app.use(express.json());
 
@@ -75,7 +72,7 @@ UserSchema.methods.calculateOfflineProgress = function() {
   const secondsOffline = Math.floor((now - this.lastSync) / 1000);
   if (secondsOffline < 1) return 0;
 
-  const maxOfflineSeconds = 3 * 60 * 60; // Лимит 3 часа
+  const maxOfflineSeconds = 3 * 60 * 60; 
   const activeOfflineSeconds = Math.min(secondsOffline, maxOfflineSeconds);
   
   const totalHourlyProfit = this.profitPerHour + ((this.offlineMiningLevel - 1) * 50);
@@ -90,7 +87,7 @@ UserSchema.methods.calculateOfflineProgress = function() {
     }
   }
 
-  const recoveryPerSecond = this.maxEnergy / 10800; // Полное восстановление за 3 часа
+  const recoveryPerSecond = this.maxEnergy / 10800; 
   const recoveredEnergy = Math.floor(secondsOffline * recoveryPerSecond);
   this.energy = Math.min(this.maxEnergy, this.energy + recoveredEnergy);
 
@@ -175,7 +172,7 @@ app.post('/api/user/click', async (req, res) => {
 
     user.calculateOfflineProgress();
     const requiredEnergy = clicksCount * user.multitapLevel;
-    if (user.energy < requiredEnergy) return res.status(400).json({ success: false, error: "Недостаточно энергии!" });
+    if (user.energy < requiredEnergy) return res.status(400).json({ error: "Недостаточно энергии!" });
 
     user.energy -= requiredEnergy;
     const coinsEarned = clicksCount * user.multitapLevel;
@@ -363,6 +360,4 @@ mongoose.connect(mongoUri).then(async () => {
 }).catch(err => {
   console.error('❌ Критическая ошибка подключения к MongoDB:', err);
 });
-
-
 
