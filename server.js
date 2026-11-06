@@ -12,7 +12,7 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
   bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 }
 
-// === КРИТИЧЕСКИЙ ФИКС CORS ДЛЯ РАБОТЫ КНОПОК И TON CONNECT ===
+// === КРИТИЧЕСКИЙ ФИКС CORS: КРАШ PATH-TO-REGEXP УСТРАНЕН ===
 app.use(cors({
   origin: '*', 
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -20,7 +20,6 @@ app.use(cors({
   credentials: true
 }));
 
-app.options('*', cors());
 app.use(express.json());
 
 // Конфигурация карточек улья
@@ -62,21 +61,21 @@ const UserSchema = new mongoose.Schema({
   walletAddress: { type: String, default: "" }
 }, { timestamps: true });
 
-// ФУНКЦИЯ ДИНАМИЧЕСКОГО МНОГОУРОВНЕВОГО ПЕРЕРАСЧЕТА (Синхронизация левелапа с фронтендом)
+// Функция динамического левелапа
 UserSchema.methods.recalculateLevel = function() {
-  let calculatedLevel = 1;
+  let targetLevel = 1;
   for (let i = 0; i < BACKEND_LEVELS.length; i++) {
     if (this.totalEarned >= BACKEND_LEVELS[i]) {
-      calculatedLevel = i + 2; // Автоматически перешагиваем через несколько уровней сразу
+      targetLevel = i + 2; 
     } else {
       break;
     }
   }
-  if (calculatedLevel > MAX_LEVELS) calculatedLevel = MAX_LEVELS;
-  this.level = calculatedLevel;
+  if (targetLevel > MAX_LEVELS) targetLevel = MAX_LEVELS;
+  this.level = targetLevel;
 };
 
-// Метод расчета офлайн Progress
+// Метод расчета офлайн progress
 UserSchema.methods.calculateOfflineProgress = function() {
   const now = new Date();
   if (!this.lastSync) {
@@ -106,7 +105,7 @@ UserSchema.methods.calculateOfflineProgress = function() {
   const recoveredEnergy = Math.floor(secondsOffline * recoveryPerSecond);
   this.energy = Math.min(this.maxEnergy, this.energy + recoveredEnergy);
 
-  this.recalculateLevel(); // Сразу проверяем уровень после офлайна
+  this.recalculateLevel();
   this.lastSync = now;
   return earnedOffline;
 };
@@ -144,7 +143,7 @@ app.post('/api/user/sync', async (req, res) => {
   }
 });
 
-// 2. УЛУЧШЕНИЕ БУСТОВ (ИСПРАВЛЕН ЛИМИТ ЭНЕРГИИ 1000 ПО ТРЕБОВАНИЮ ФРОНТЕНДА)
+// 2. УЛУЧШЕНИЕ БУСТОВ
 app.post('/api/user/upgrade-stat', async (req, res) => {
   try {
     const { telegramId, type, cost } = req.body;
@@ -160,11 +159,10 @@ app.post('/api/user/upgrade-stat', async (req, res) => {
     if (type === 'multitap') {
       user.multitapLevel += 1;
     } else if (type === 'energy') {
-      // ИСПРАВЛЕНИЕ: Фиксированный буст бака по нарастающей, строго в рамках 1000 общего лимита баланса
       user.energyLimitLevel += 1;
       const boostVal = user.level * 300;
       let targetEnergy = user.energy + boostVal;
-      if (targetEnergy > 1000) targetEnergy = 1000; // Не выходим за рамки жесткого лимита 1000
+      if (targetEnergy > 1000) targetEnergy = 1000; 
       user.energy = targetEnergy;
       user.maxEnergy = 1000; 
     } else if (type === 'offline') {
@@ -181,7 +179,7 @@ app.post('/api/user/upgrade-stat', async (req, res) => {
   }
 });
 
-// 3. ПАКЕТ КЛИКОВ (С АВТО-ЛЕВЕЛАПОМ СКВОЗЬ УРОВНИ И СКИНЫ)
+// 3. ПАКЕТ КЛИКОВ
 app.post('/api/user/click', async (req, res) => {
   try {
     const { telegramId, clicksCount } = req.body;
@@ -194,7 +192,6 @@ app.post('/api/user/click', async (req, res) => {
 
     user.calculateOfflineProgress();
     
-    // Если кликов больше 0, списываем энергию. Если 0 (вызов от Ежедневной награды), просто обновляем баланс
     if (clicksCount > 0) {
       const requiredEnergy = clicksCount * user.multitapLevel;
       if (user.energy < requiredEnergy) return res.status(400).json({ error: "Недостаточно энергии!" });
@@ -204,7 +201,7 @@ app.post('/api/user/click', async (req, res) => {
       user.totalEarned += coinsEarned; 
     }
 
-    user.recalculateLevel(); // Железобетонный автопересчет уровней и скинов
+    user.recalculateLevel();
     await user.save();
     res.json({ success: true, user });
   } catch (error) {
@@ -248,7 +245,7 @@ app.post('/api/user/buy-card', async (req, res) => {
     res.status(500).json({ success: false, error: "Ошибка сервера при покупке" });
   }
 });
-// 5. ЕЖЕДНЕВНОЕ КОМБО (СВЯЗАНО С ДИНАМИЧЕСКИМ МНОГОУРОВНЕВЫМ LEVEL-UP НА БЭКЕНДЕ)
+// 5. ЕЖЕДНЕВНОЕ КОМБО (СВЯЗАНО С ДИНАМИЧЕСКИМ МНОГОУРОВНЕВЫМ LEVEL-UP)
 const CURRENT_SECRET_COMBO = ['ceo_card', 'crypto_card']; 
 const COMBO_REWARD = 250000;
 
@@ -276,10 +273,10 @@ app.post('/api/user/check-combo', async (req, res) => {
 
       if (user.todayCombo.length === CURRENT_SECRET_COMBO.length) {
         user.balance += COMBO_REWARD;
-        user.totalEarned += COMBO_REWARD; // Монеты комбо прибавляются к totalEarned
+        user.totalEarned += COMBO_REWARD; 
         user.lastComboDate = "COMPLETED_" + todayStr;
         
-        user.recalculateLevel(); // Мгновенный перерасчет уровней/скинов от награды комбо
+        user.recalculateLevel(); 
         await user.save();
         return res.json({ success: true, user, comboCompleted: true, reward: COMBO_REWARD });
       }
