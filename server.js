@@ -174,15 +174,10 @@ app.post('/api/user/upgrade-stat', async (req, res) => {
     const { telegramId, type, cost } = req.body;
     const user = await User.findOne({ telegramId });
     if (!user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
-
     if (user.level >= 30) return res.status(400).json({ success: false, error: "Максимальный уровень!" });
 
     user.calculateOfflineProgress();
-    
-    // Мягкая валидация баланса на сервере
-    if (user.balance < (cost || 0)) {
-       return res.status(400).json({ success: false, error: "Не хватает мёда на сервере!" });
-    }
+    if (user.balance < (cost || 0)) return res.status(400).json({ success: false, error: "Не хватает мёда!" });
     user.balance -= (cost || 0);
 
     if (type === 'multitap') user.multitapLevel += 1;
@@ -204,8 +199,7 @@ app.post('/api/user/buy-card', async (req, res) => {
     const cardConfig = UPGRADE_CARDS_CONFIG[cardId];
     const user = await User.findOne({ telegramId });
     if (!user || !cardConfig) return res.status(400).json({ success: false, error: "Ошибка параметров" });
-
-    if (user.level >= 30) return res.status(400).json({ success: false, error: "Максимальный уровень улья!" });
+    if (user.level >= 30) return res.status(400).json({ success: false, error: "Максимальный уровень!" });
 
     user.calculateOfflineProgress();
     const userCardIndex = user.purchasedCards.findIndex(c => c.cardId === cardId);
@@ -235,9 +229,7 @@ app.post('/api/user/check-combo', async (req, res) => {
     const user = await User.findOne({ telegramId });
     if (!user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
 
-    // Ошибка исправлена: .split('T')[0] возвращает чистую строковую дату (ГГГГ-ММ-ДД)
     const todayStr = new Date().toISOString().split('T')[0];
-
     if (user.lastComboDate === "COMPLETED_" + todayStr) {
       return res.json({ success: true, user, comboCompleted: true });
     }
@@ -291,9 +283,13 @@ mongoose.connect(mongoUri)
     app.listen(PORT, () => {
       console.log(`🚀 Сервер Express успешно развернут на порту ${PORT}`);
       if (bot) {
-        bot.telegram.deleteWebhook({ drop_pending_updates: true })
-          .then(() => { bot.launch().then(() => console.log('🤖 Telegram Бот запущен в режиме Long Polling')); })
-          .catch(err => console.error('Ошибка очистки вебхуков Telegram:', err.message));
+        // Добавляем таймаут в 5 секунд перед запуском бота.
+        // Это дает время старому серверу Render полностью отключить свою сессию polling и предотвращает ошибку 409 Conflict!
+        setTimeout(() => {
+          bot.telegram.deleteWebhook({ drop_pending_updates: true })
+            .then(() => { bot.launch().then(() => console.log('🤖 Telegram Бот запущен без конфликтов сессий!')); })
+            .catch(err => console.error('Лог очистки сессии Telegram:', err.message));
+        }, 5000);
       }
     });
   })
