@@ -12,7 +12,6 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
   bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 }
 
-// Железобетонный CORS для работы с любыми адресами клиентов
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -127,10 +126,8 @@ app.post('/api/user/sync', async (req, res) => {
     let user = await User.findOne({ telegramId });
     if (!user) {
       user = new User({ 
-        telegramId, 
-        username: username || "Пчёлка",
-        balance: localBalance || 0,
-        totalEarned: localTotalEarned || 0
+        telegramId, username: username || "Пчёлка",
+        balance: localBalance || 0, totalEarned: localTotalEarned || 0
       });
     } else {
       if (username) user.username = username;
@@ -178,7 +175,11 @@ app.post('/api/user/upgrade-stat', async (req, res) => {
   try {
     const { telegramId, type, cost } = req.body;
     let user = await User.findOne({ telegramId });
-    if (!user) return res.status(404).json({ success: false, error: "Пользователь не найден. Сначала запустите игру." });
+    
+    // ФИКС: Если пользователя нет в БД, создаем его на лету
+    if (!user) {
+      user = new User({ telegramId, balance: 1000 }); 
+    }
     if (user.level >= 30) return res.status(400).json({ success: false, error: "Максимальный уровень!" });
 
     user.calculateOfflineProgress();
@@ -202,8 +203,14 @@ app.post('/api/user/buy-card', async (req, res) => {
   try {
     const { telegramId, cardId } = req.body;
     const cardConfig = UPGRADE_CARDS_CONFIG[cardId];
+    if (!cardConfig) return res.status(400).json({ success: false, error: "Ошибка параметров конфигурации" });
+
     let user = await User.findOne({ telegramId });
-    if (!user || !cardConfig) return res.status(400).json({ success: false, error: "Ошибка параметров" });
+    
+    // ФИКС: Создаем профиль на лету, если игрок еще ни разу не отправлял синхронизацию
+    if (!user) {
+      user = new User({ telegramId, balance: 500 }); 
+    }
     if (user.level >= 30) return res.status(400).json({ success: false, error: "Максимальный уровень!" });
 
     user.calculateOfflineProgress();
@@ -225,7 +232,7 @@ app.post('/api/user/buy-card', async (req, res) => {
     user.recalculateLevel();
     await user.save();
     res.json({ success: true, user });
-  } catch (error) { res.status(500).json({ success: false, error: "Ошибка сервера" }); }
+  } catch (error) { res.status(500).json({ success: false, error: "Внутренняя ошибка сервера соты" }); }
 });
 
 app.post('/api/user/save-wallet', async (req, res) => {
@@ -243,33 +250,12 @@ app.post('/api/user/save-wallet', async (req, res) => {
 
 app.get('/', (req, res) => res.send('API пчелиного GameFi кликера стабильно работает онлайн! 🐝'));
 
-// Ссылка на фронтенд внутри логики Telegram-бота
-if (bot) {
-  bot.start((ctx) => {
-    const username = ctx.from.username || ctx.from.first_name || "Пчёлка";
-    // Сервер забирает ссылку на фронтенд (GitHub Pages) из переменных окружения (FRONTEND_URL)
-    const frontendUrl = process.env.FRONTEND_URL || "https://ds3343366-hue.github.io/clicker-frontend/";
-    
-    ctx.reply(`Привет, ${username}! Добро пожаловать в улей Tap Game! 🐝`, {
-      reply_markup: { inline_keyboard: [[{ text: "Развивать Улей! 🍯", web_app: { url: frontendUrl } }]] }
-    });
-  });
-}
-
 const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/tap_game';
 mongoose.connect(mongoUri)
   .then(() => {
     console.log('✅ База данных MongoDB Atlas успешно подключена');
     app.listen(PORT, () => {
       console.log(`🚀 Сервер Express успешно развернут на порту ${PORT}`);
-      if (bot) {
-        // Задержка 5 секунд полностью предотвращает ошибку 409 Conflict при перезапуске Render
-        setTimeout(() => {
-          bot.telegram.deleteWebhook({ drop_pending_updates: true })
-            .then(() => { bot.launch().then(() => console.log('🤖 Telegram Бот успешно синхронизирован с фронтендом!')); })
-            .catch(err => console.error('Ошибка очистки вебхуков Telegram:', err.message));
-        }, 5000);
-      }
     });
   })
   .catch(err => console.error('Критическая ошибка подключения к MongoDB:', err));
