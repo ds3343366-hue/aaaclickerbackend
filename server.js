@@ -12,7 +12,7 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
   bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 }
 
-// === ИСПРАВЛЕННЫЙ КОРРЕКТНЫЙ БЛОК CORS (УБРАНА ОШИБКА ДЕПЛОЯ) ===
+// === КРИТИЧЕСКИЙ ФИКС CORS ДЛЯ РАБОТЫ КНОПОК И TON CONNECT ===
 app.use(cors({
   origin: '*', 
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -20,6 +20,7 @@ app.use(cors({
   credentials: true
 }));
 
+app.options('*', cors());
 app.use(express.json());
 
 // Конфигурация карточек улья
@@ -61,7 +62,21 @@ const UserSchema = new mongoose.Schema({
   walletAddress: { type: String, default: "" }
 }, { timestamps: true });
 
-// Метод расчета офлайн-дохода и регенерации энергии
+// ФУНКЦИЯ ДИНАМИЧЕСКОГО МНОГОУРОВНЕВОГО ПЕРЕРАСЧЕТА (Синхронизация левелапа с фронтендом)
+UserSchema.methods.recalculateLevel = function() {
+  let calculatedLevel = 1;
+  for (let i = 0; i < BACKEND_LEVELS.length; i++) {
+    if (this.totalEarned >= BACKEND_LEVELS[i]) {
+      calculatedLevel = i + 2; // Автоматически перешагиваем через несколько уровней сразу
+    } else {
+      break;
+    }
+  }
+  if (calculatedLevel > MAX_LEVELS) calculatedLevel = MAX_LEVELS;
+  this.level = calculatedLevel;
+};
+
+// Метод расчета офлайн Progress
 UserSchema.methods.calculateOfflineProgress = function() {
   const now = new Date();
   if (!this.lastSync) {
@@ -91,6 +106,7 @@ UserSchema.methods.calculateOfflineProgress = function() {
   const recoveredEnergy = Math.floor(secondsOffline * recoveryPerSecond);
   this.energy = Math.min(this.maxEnergy, this.energy + recoveredEnergy);
 
+  this.recalculateLevel(); // Сразу проверяем уровень после офлайна
   this.lastSync = now;
   return earnedOffline;
 };
@@ -120,6 +136,7 @@ app.post('/api/user/sync', async (req, res) => {
     }
 
     const earnedOffline = user.calculateOfflineProgress();
+    user.recalculateLevel();
     await user.save();
     res.json({ success: true, user, earnedOffline });
   } catch (error) {
@@ -127,7 +144,7 @@ app.post('/api/user/sync', async (req, res) => {
   }
 });
 
-// 2. УЛУЧШЕНИЕ БУСТОВ
+// 2. УЛУЧШЕНИЕ БУСТОВ (ИСПРАВЛЕН ЛИМИТ ЭНЕРГИИ 1000 ПО ТРЕБОВАНИЮ ФРОНТЕНДА)
 app.post('/api/user/upgrade-stat', async (req, res) => {
   try {
     const { telegramId, type, cost } = req.body;
@@ -143,15 +160,20 @@ app.post('/api/user/upgrade-stat', async (req, res) => {
     if (type === 'multitap') {
       user.multitapLevel += 1;
     } else if (type === 'energy') {
+      // ИСПРАВЛЕНИЕ: Фиксированный буст бака по нарастающей, строго в рамках 1000 общего лимита баланса
       user.energyLimitLevel += 1;
-      user.maxEnergy += 500;
-      user.energy = user.maxEnergy;
+      const boostVal = user.level * 300;
+      let targetEnergy = user.energy + boostVal;
+      if (targetEnergy > 1000) targetEnergy = 1000; // Не выходим за рамки жесткого лимита 1000
+      user.energy = targetEnergy;
+      user.maxEnergy = 1000; 
     } else if (type === 'offline') {
       user.offlineMiningLevel += 1;
     } else {
       return res.status(400).json({ success: false, error: "Неверный тип буста" });
     }
 
+    user.recalculateLevel();
     await user.save();
     res.json({ success: true, user });
   } catch (error) {
@@ -159,37 +181,30 @@ app.post('/api/user/upgrade-stat', async (req, res) => {
   }
 });
 
-// 3. ПАКЕТ КЛИКОВ
+// 3. ПАКЕТ КЛИКОВ (С АВТО-ЛЕВЕЛАПОМ СКВОЗЬ УРОВНИ И СКИНЫ)
 app.post('/api/user/click', async (req, res) => {
   try {
     const { telegramId, clicksCount } = req.body;
-    if (!telegramId || typeof clicksCount !== 'number' || clicksCount <= 0) {
-      return res.status(400).json({ success: false, error: "Неверное количество кликов" });
+    if (!telegramId || typeof clicksCount !== 'number') {
+      return res.status(400).json({ success: false, error: "Неверные параметры кликов" });
     }
 
     const user = await User.findOne({ telegramId });
     if (!user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
 
     user.calculateOfflineProgress();
-    const requiredEnergy = clicksCount * user.multitapLevel;
-    if (user.energy < requiredEnergy) return res.status(400).json({ error: "Недостаточно энергии!" });
-
-    user.energy -= requiredEnergy;
-    const coinsEarned = clicksCount * user.multitapLevel;
-    user.balance += coinsEarned;
-    user.totalEarned += coinsEarned; 
-
-    let calculatedLevel = 1;
-    for (let i = 0; i < BACKEND_LEVELS.length; i++) {
-      if (user.totalEarned >= BACKEND_LEVELS[i]) {
-        calculatedLevel = i + 2;
-      } else {
-        break;
-      }
+    
+    // Если кликов больше 0, списываем энергию. Если 0 (вызов от Ежедневной награды), просто обновляем баланс
+    if (clicksCount > 0) {
+      const requiredEnergy = clicksCount * user.multitapLevel;
+      if (user.energy < requiredEnergy) return res.status(400).json({ error: "Недостаточно энергии!" });
+      user.energy -= requiredEnergy;
+      const coinsEarned = clicksCount * user.multitapLevel;
+      user.balance += coinsEarned;
+      user.totalEarned += coinsEarned; 
     }
-    if (calculatedLevel > MAX_LEVELS) calculatedLevel = MAX_LEVELS;
-    user.level = calculatedLevel;
 
+    user.recalculateLevel(); // Железобетонный автопересчет уровней и скинов
     await user.save();
     res.json({ success: true, user });
   } catch (error) {
@@ -226,13 +241,14 @@ app.post('/api/user/buy-card', async (req, res) => {
       user.purchasedCards.push({ cardId: cardId, level: 1 });
     }
 
+    user.recalculateLevel();
     await user.save();
     res.json({ success: true, user });
   } catch (error) {
     res.status(500).json({ success: false, error: "Ошибка сервера при покупке" });
   }
 });
-// 5. ЕЖЕДНЕВНОЕ КОМБО
+// 5. ЕЖЕДНЕВНОЕ КОМБО (СВЯЗАНО С ДИНАМИЧЕСКИМ МНОГОУРОВНЕВЫМ LEVEL-UP НА БЭКЕНДЕ)
 const CURRENT_SECRET_COMBO = ['ceo_card', 'crypto_card']; 
 const COMBO_REWARD = 250000;
 
@@ -260,8 +276,10 @@ app.post('/api/user/check-combo', async (req, res) => {
 
       if (user.todayCombo.length === CURRENT_SECRET_COMBO.length) {
         user.balance += COMBO_REWARD;
-        user.totalEarned += COMBO_REWARD;
+        user.totalEarned += COMBO_REWARD; // Монеты комбо прибавляются к totalEarned
         user.lastComboDate = "COMPLETED_" + todayStr;
+        
+        user.recalculateLevel(); // Мгновенный перерасчет уровней/скинов от награды комбо
         await user.save();
         return res.json({ success: true, user, comboCompleted: true, reward: COMBO_REWARD });
       }
