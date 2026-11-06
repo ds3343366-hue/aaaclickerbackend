@@ -12,8 +12,17 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
   bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 }
 
-// Глобальные Middleware
-app.use(cors());
+// === КРИТИЧЕСКИЙ ФИКС CORS ДЛЯ РАБОТЫ КНОПОК И TON CONNECT ===
+app.use(cors({
+  origin: '*', // Разрешаем запросы абсолютно со всех доменов (включая GitHub Pages)
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+  credentials: true
+}));
+
+// Перехватываем OPTIONS запросы от TON Connect, чтобы они не вешали фронтенд
+app.options('*', cors());
+
 app.use(express.json());
 
 // Конфигурация карточек улья
@@ -110,7 +119,7 @@ app.post('/api/user/sync', async (req, res) => {
         offlineMiningLevel: 1
       });
     } else if (username && user.username !== username) {
-      user.username = username; // Обновляем имя, если изменилось в ТГ
+      user.username = username; 
     }
 
     const earnedOffline = user.calculateOfflineProgress();
@@ -238,7 +247,7 @@ app.post('/api/user/check-combo', async (req, res) => {
     const user = await User.findOne({ telegramId });
     if (!user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
 
-    const todayStr = new Date().toISOString().split('T')[0]; // Фикс: берем строковое значение даты
+    const todayStr = new Date().toISOString().split('T')[0];
 
     if (user.lastComboDate !== todayStr && user.todayCombo.length > 0 && user.lastComboDate !== "COMPLETED_" + todayStr) {
       user.todayCombo = [];
@@ -354,4 +363,6 @@ mongoose.connect(mongoUri).then(async () => {
 }).catch(err => {
   console.error('❌ Критическая ошибка подключения к MongoDB:', err);
 });
+
+
 
