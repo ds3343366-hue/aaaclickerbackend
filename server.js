@@ -12,7 +12,7 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
   bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 }
 
-// Железобетонный CORS
+// Железобетонный CORS для работы с любыми адресами клиентов
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -126,11 +126,16 @@ app.post('/api/user/sync', async (req, res) => {
 
     let user = await User.findOne({ telegramId });
     if (!user) {
-      user = new User({ telegramId, username: username || "Пчёлка" });
+      user = new User({ 
+        telegramId, 
+        username: username || "Пчёлка",
+        balance: localBalance || 0,
+        totalEarned: localTotalEarned || 0
+      });
     } else {
       if (username) user.username = username;
-      if (localBalance && localBalance > user.balance && (localBalance - user.balance) < 50000) user.balance = localBalance;
-      if (localTotalEarned && localTotalEarned > user.totalEarned && (localTotalEarned - user.totalEarned) < 50000) user.totalEarned = localTotalEarned;
+      if (localBalance && localBalance > user.balance) user.balance = localBalance;
+      if (localTotalEarned && localTotalEarned > user.totalEarned) user.totalEarned = localTotalEarned;
     }
 
     const earnedOffline = user.calculateOfflineProgress();
@@ -172,8 +177,8 @@ app.post('/api/user/click', async (req, res) => {
 app.post('/api/user/upgrade-stat', async (req, res) => {
   try {
     const { telegramId, type, cost } = req.body;
-    const user = await User.findOne({ telegramId });
-    if (!user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
+    let user = await User.findOne({ telegramId });
+    if (!user) return res.status(404).json({ success: false, error: "Пользователь не найден. Сначала запустите игру." });
     if (user.level >= 30) return res.status(400).json({ success: false, error: "Максимальный уровень!" });
 
     user.calculateOfflineProgress();
@@ -197,7 +202,7 @@ app.post('/api/user/buy-card', async (req, res) => {
   try {
     const { telegramId, cardId } = req.body;
     const cardConfig = UPGRADE_CARDS_CONFIG[cardId];
-    const user = await User.findOne({ telegramId });
+    let user = await User.findOne({ telegramId });
     if (!user || !cardConfig) return res.status(400).json({ success: false, error: "Ошибка параметров" });
     if (user.level >= 30) return res.status(400).json({ success: false, error: "Максимальный уровень!" });
 
@@ -223,42 +228,13 @@ app.post('/api/user/buy-card', async (req, res) => {
   } catch (error) { res.status(500).json({ success: false, error: "Ошибка сервера" }); }
 });
 
-app.post('/api/user/check-combo', async (req, res) => {
-  try {
-    const { telegramId, cardId } = req.body;
-    const user = await User.findOne({ telegramId });
-    if (!user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
-
-    const todayStr = new Date().toISOString().split('T')[0];
-    if (user.lastComboDate === "COMPLETED_" + todayStr) {
-      return res.json({ success: true, user, comboCompleted: true });
-    }
-
-    if (user.lastComboDate !== todayStr && !user.lastComboDate.startsWith("COMPLETED_")) {
-      user.todayCombo = [];
-      user.lastComboDate = todayStr;
-    }
-
-    if (CURRENT_SECRET_COMBO.includes(cardId) && !user.todayCombo.includes(cardId)) {
-      user.todayCombo.push(cardId);
-      if (user.todayCombo.length === CURRENT_SECRET_COMBO.length) {
-        user.balance += COMBO_REWARD;
-        user.totalEarned += COMBO_REWARD; 
-        user.lastComboDate = "COMPLETED_" + todayStr; 
-      }
-    }
-
-    user.recalculateLevel();
-    await user.save();
-    res.json({ success: true, user, comboCompleted: user.lastComboDate.startsWith("COMPLETED_") });
-  } catch (error) { res.status(500).json({ success: false, error: error.message }); }
-});
-
 app.post('/api/user/save-wallet', async (req, res) => {
   try {
     const { telegramId, walletAddress } = req.body;
-    const user = await User.findOne({ telegramId });
-    if (!user) return res.status(404).json({ success: false, error: "Пользователь не найден" });
+    let user = await User.findOne({ telegramId });
+    if (!user) {
+      user = new User({ telegramId, username: "Пчёлка TON" });
+    }
     user.walletAddress = walletAddress || "";
     await user.save();
     res.json({ success: true, user });
@@ -267,11 +243,15 @@ app.post('/api/user/save-wallet', async (req, res) => {
 
 app.get('/', (req, res) => res.send('API пчелиного GameFi кликера стабильно работает онлайн! 🐝'));
 
+// Ссылка на фронтенд внутри логики Telegram-бота
 if (bot) {
   bot.start((ctx) => {
     const username = ctx.from.username || ctx.from.first_name || "Пчёлка";
+    // Сервер забирает ссылку на фронтенд (GitHub Pages) из переменных окружения (FRONTEND_URL)
+    const frontendUrl = process.env.FRONTEND_URL || "https://ds3343366-hue.github.io/clicker-frontend/";
+    
     ctx.reply(`Привет, ${username}! Добро пожаловать в улей Tap Game! 🐝`, {
-      reply_markup: { inline_keyboard: [[{ text: "Развивать Улей! 🍯", web_app: { url: process.env.FRONTEND_URL || "https://ds3343366-hue.github.io/clicker-frontend/" } }]] }
+      reply_markup: { inline_keyboard: [[{ text: "Развивать Улей! 🍯", web_app: { url: frontendUrl } }]] }
     });
   });
 }
@@ -283,18 +263,14 @@ mongoose.connect(mongoUri)
     app.listen(PORT, () => {
       console.log(`🚀 Сервер Express успешно развернут на порту ${PORT}`);
       if (bot) {
-        // Добавляем таймаут в 5 секунд перед запуском бота.
-        // Это дает время старому серверу Render полностью отключить свою сессию polling и предотвращает ошибку 409 Conflict!
+        // Задержка 5 секунд полностью предотвращает ошибку 409 Conflict при перезапуске Render
         setTimeout(() => {
           bot.telegram.deleteWebhook({ drop_pending_updates: true })
-            .then(() => { bot.launch().then(() => console.log('🤖 Telegram Бот запущен без конфликтов сессий!')); })
-            .catch(err => console.error('Лог очистки сессии Telegram:', err.message));
+            .then(() => { bot.launch().then(() => console.log('🤖 Telegram Бот успешно синхронизирован с фронтендом!')); })
+            .catch(err => console.error('Ошибка очистки вебхуков Telegram:', err.message));
         }, 5000);
       }
     });
   })
   .catch(err => console.error('Критическая ошибка подключения к MongoDB:', err));
-
-process.on('unhandledRejection', (reason, promise) => { console.error('Unhandled Rejection:', reason); });
-process.on('uncaughtException', (err) => { console.error('Uncaught Exception:', err); });
 
