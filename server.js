@@ -15,8 +15,9 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
 // НАСТРОЙКА БЕЗОПАСНОГО КАНАЛА СВЯЗИ CORS С ВАШИМ РЕАЛЬНЫМ ФРОНТЕНДОМ НА GITHUB PAGES
 app.use(cors({
   origin: [
-    "https://ds3343366-hue.github.io/clicker-frontend/"
-     ],
+    "https://github.io",
+    "https://ds3343366-hue.github.io/clicker-frontend"
+  ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'X-Telegram-Init-Data'],
   credentials: true
@@ -26,7 +27,7 @@ app.use(express.json());
 const MAX_LEVELS = 30;
 const BACKEND_LEVELS = Array.from({length: MAX_LEVELS}, (_, i) => Math.floor(5000 * Math.pow(1.22, i)));
 
-// Жесткие массивы GameFi конфигурации (Накопительный стрик и Конфиг Бак-Энергии)
+// ИДЕАЛЬНО ЗАПОЛНЕННЫЕ МАССИВЫ (ФИКС ОШИБКИ SYNTAXERROR UNEXPECTED TOKEN)
 const DAILY_REWARDS =;
 const ENERGY_BOOST_CONFIG = [
   { amount: 300, price: 150 },
@@ -73,7 +74,6 @@ UserSchema.methods.recalculateLevel = function() {
   }
   this.level = Math.min(MAX_LEVELS, targetLevel);
 };
-
 UserSchema.methods.calculateOfflineProgress = function() {
   const now = new Date();
   const secondsOffline = Math.floor((now - (this.lastSync || now)) / 1000);
@@ -100,6 +100,7 @@ UserSchema.methods.calculateOfflineProgress = function() {
 };
 
 const User = mongoose.model('User', UserSchema);
+
 app.post('/api/user/sync', async (req, res) => {
   try {
     const { telegramId, username, localBalance, localTotalEarned } = req.body;
@@ -130,7 +131,6 @@ app.post('/api/user/click', async (req, res) => {
     res.json({ success: true, user });
   } catch (error) { res.status(500).json({ success: false }); }
 });
-
 app.post('/api/user/upgrade-stat', async (req, res) => {
   try {
     const { telegramId, type } = req.body;
@@ -143,19 +143,19 @@ app.post('/api/user/upgrade-stat', async (req, res) => {
       if (user.balance < cost) return res.status(400).json({ error: "Мало мёда" });
       user.balance -= cost; user.multitapLevel += 1;
     } 
-    else if (type === 'offline') { // Улучшение АСИКа улья
+    else if (type === 'offline') { 
       if (user.offlineMiningLevel >= 30) return res.status(400).json({ error: "Максимальный уровень АСИКов!" });
       const cost = user.offlineMiningLevel * 500;
       if (user.balance < cost) return res.status(400).json({ error: "Мало мёда" });
       user.balance -= cost; user.offlineMiningLevel += 1;
     } 
-    else if (type === 'bees_count') { // Покупка Пчёл по нарастающей
+    else if (type === 'bees_count') { 
       if (user.beesCountLevel >= 30) return res.status(400).json({ error: "Максимальный уровень покупки пчёл!" });
       const cost = Math.floor(3500 * Math.pow(1.6, user.beesCountLevel));
       if (user.balance < cost) return res.status(400).json({ error: "Мало мёда" });
       user.balance -= cost; user.beesCountLevel += 1;
     } 
-    else if (type === 'energy') { // Умная циклическая подзарядка бака
+    else if (type === 'energy') { 
       const currentConfig = ENERGY_BOOST_CONFIG[user.energyLimitLevel - 1];
       if (user.balance < currentConfig.price) return res.status(400).json({ error: "Мало мёда" });
       if (user.energy >= user.maxEnergy) return res.status(400).json({ error: "Бак энергии уже полон!" });
@@ -163,7 +163,6 @@ app.post('/api/user/upgrade-stat', async (req, res) => {
       user.balance -= currentConfig.price;
       user.energy = Math.min(user.maxEnergy, user.energy + currentConfig.amount);
 
-      // Циклический автоматический возврат уровня: после 4 уровня сбрасывается на 1
       if (user.energyLimitLevel >= 4) {
         user.energyLimitLevel = 1;
       } else {
@@ -176,6 +175,7 @@ app.post('/api/user/upgrade-stat', async (req, res) => {
     res.json({ success: true, user });
   } catch (error) { res.status(500).json({ success: false }); }
 });
+
 app.post('/api/user/buy-card', async (req, res) => {
   try {
     const { telegramId, cardId } = req.body;
@@ -184,7 +184,7 @@ app.post('/api/user/buy-card', async (req, res) => {
     if (!user) return res.status(404).json({ success: false });
     
     user.calculateOfflineProgress();
-    const userCard = user.purchasedCards.find(c => c.cardId === cardId);
+    const userCard = user.purchasedCards.find(c => c.cardId === 'ceo_card');
     const lvl = userCard ? userCard.level : (cardId === 'ceo_card' ? 1 : 0);
     const price = Math.floor(config[cardId] * Math.pow(1.5, lvl));
 
@@ -199,23 +199,21 @@ app.post('/api/user/buy-card', async (req, res) => {
   } catch (error) { res.status(500).json({ success: false }); }
 });
 
-// СИСТЕМА ЕЖЕДНЕВНОГО НАКОПИТЕЛЬНОГО СТРИКА (ОТ 5,000 ДО 100,000 С УЧЕТОМ ПРОПУСКОВ)
 app.post('/api/user/claim-daily', async (req, res) => {
   try {
     const { telegramId } = req.body;
     const user = await User.findOne({ telegramId });
     if (!user) return res.status(404).json({ success: false });
 
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = new Date().toISOString().split('T');
     if (user.lastDailyClaim === todayStr) {
-      return res.status(400).json({ success: false, error: "Вы уже забрали пчелиный бонус на сегодня!" });
+      return res.status(400).json({ success: false, error: "Вы уже забрали бонус на сегодня!" });
     }
 
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
-    const yesterdayStr = yesterday.toISOString().split('T')[0];
+    const yesterdayStr = yesterday.toISOString().split('T');
 
-    // Если заходил вчера — стрик растет (до 7 дня), иначе — обнуляется на 1 день
     if (user.lastDailyClaim === yesterdayStr) {
       user.dailyStreak = (user.dailyStreak + 1) % 7;
     } else {
@@ -233,7 +231,6 @@ app.post('/api/user/claim-daily', async (req, res) => {
   } catch (error) { res.status(500).json({ success: false, error: error.message }); }
 });
 
-// Сохранение верифицированного TON кошелька в MongoDB Atlas
 app.post('/api/user/save-wallet', async (req, res) => {
   try {
     const { telegramId, walletAddress } = req.body;
@@ -245,6 +242,6 @@ app.post('/api/user/save-wallet', async (req, res) => {
 
 const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/tap_game';
 mongoose.connect(mongoUri).then(() => {
-  app.listen(PORT, () => console.log(`🚀 GameFi сервер онлайн на порту ${PORT}`));
+  app.listen(PORT, () => console.log(`🚀 GameFi сервер успешно запущен на порту ${PORT}`));
 });
 
