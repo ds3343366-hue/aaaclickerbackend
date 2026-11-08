@@ -5,39 +5,30 @@ const mongoose = require('mongoose');
 const { TonClient, WalletContractV4, internal, toNano } = require('@ton/ton');
 const { mnemonicToPrivateKey } = require('@ton/crypto');
 
-// Стабильный запуск dotenv: если файла нет в системе (на Render), библиотека просто пропустит этот шаг
-require('dotenv').config({ silent: true });
-
+// Запуск dotenv отключен, чтобы исключить квантовые сбросы переменных на Render
 const app = express();
 
 // Настройка CORS для вашего фронтенда на GitHub Pages
 app.use(cors({
-    origin: [
-        'https://github.io',
-        'https://ds3343366-hue.github.io/clicker-frontend/'
-    ],
+    origin: [ 'https://ds3343366-hue.github.io/clicker-frontend/' ],
     methods: ['GET', 'POST'],
     allowedHeaders: ['Content-Type']
 }));
 app.use(express.json());
 
-// Прямое чтение системной переменной из дашборда Render
+// ============================================================================
+// БЕЗОПАСНОЕ ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ (СТРОГО ЧЕРЕЗ ПАНЕЛЬ RENDER)
+// ============================================================================
 const mongoURI = process.env.MONGODB_URI;
 
-if (!mongoURI) {
-    console.error('\n❌ Критическая ошибка: Переменная MONGODB_URI не обнаружена в системе!');
-    console.error('Пожалуйста, добавьте вашу ссылку на MongoDB Atlas во вкладку Environment на Render.\n');
-    process.exit(1); 
+if (mongoURI) {
+    mongoose.connect(mongoURI)
+        .then(() => console.log('📦 УСПЕШНО: Подключено к облачному кластеру MongoDB Atlas!'))
+        .catch(err => console.error('⚠️ Ошибка подключения к базе данных:', err.message));
+} else {
+    console.log('⚠️ Предупреждение: Переменная MONGODB_URI пока не инициализирована в панели Render.');
 }
 
-mongoose.connect(mongoURI)
-    .then(() => console.log('📦 Успешное подключение к облачной базе данных MongoDB Atlas'))
-    .catch(err => {
-        console.error('❌ Ошибка подключения к MongoDB:', err.message);
-        process.exit(1);
-    });
-
-// Схема пользователя
 const userSchema = new mongoose.Schema({
     tg_id: { type: Number, required: true, unique: true },
     balance: { type: Number, default: 0 },
@@ -48,6 +39,8 @@ const userSchema = new mongoose.Schema({
 });
 
 const User = mongoose.model('User', userSchema);
+
+// Считываем токен бота строго из скрытых настроек Render Environment
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ITEM_PRICES = {
     asic: 500,
@@ -67,6 +60,9 @@ const tonClient = new TonClient({
 function verifyTelegramWebAppData(req, res, next) {
     const { initData } = req.body;
     
+    if (!BOT_TOKEN) {
+        return res.status(500).json({ error: "Server Configuration Error: BOT_TOKEN is missing on Render panel" });
+    }
     if (!initData) {
         return res.status(401).json({ error: "Unauthorized: Missing initData" });
     }
@@ -76,8 +72,7 @@ function verifyTelegramWebAppData(req, res, next) {
         const hash = q.get('hash');
         q.delete('hash');
         
-        // Алфавитная сортировка параметров (строгое требование Telegram API)
-        q.sort(); 
+        q.sort(); // Алфавитная сортировка параметров (требование Telegram API)
         
         const items = Array.from(q.entries())
             .map(([k, v]) => `${k}=${v}`)
@@ -233,13 +228,13 @@ app.post('/api/admin/airdrop/run', async (req, res) => {
 
 app.get('/', (req, res) => { res.json({ app: "Cyber Miner Cloud Backend", status: "ready" }); });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log(`\n==================================================`);
     console.log(`🚀 БЭКЕНД УСПЕШНО ЗАПУЩЕН НА ПОРТУ: ${PORT}`);
-    const maskedURI = mongoURI ? mongoURI.replace(/\/\/.*@/, '//***:***@') : "ОТСУТСТВУЕТ!";
+    const maskedURI = mongoURI ? mongoURI.replace(/\/\/.*@/, '//***:***@') : "ОТСУТСТВУЕТ В СИСТЕМЕ RENDER!";
     console.log(`   🔌 MONGODB_ATLAS_URI: ${maskedURI}`);
-    console.log(`   🤖 BOT_TOKEN:          ${BOT_TOKEN ? '✅ Загружен' : '❌ ОТСУТСТВУЕТ!'}`);
+    console.log(`   🤖 BOT_TOKEN:          ${BOT_TOKEN ? '✅ Загружен из Render' : '❌ ОТСУТСТВУЕТ В СИСТЕМЕ RENDER!'}`);
     console.log(`==================================================\n`);
 });
 
