@@ -15,7 +15,8 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
 // НАСТРОЙКА БЕЗОПАСНОГО КАНАЛА СВЯЗИ CORS С ВАШИМ РЕАЛЬНЫМ ФРОНТЕНДОМ НА GITHUB PAGES
 app.use(cors({
   origin: [
-    "https://ds3343366-hue.github.io/clicker-frontend/"
+    "https://github.io",
+    "https://github.io/clicker-frontend"
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'X-Telegram-Init-Data'],
@@ -26,8 +27,7 @@ app.use(express.json());
 const MAX_LEVELS = 30;
 const BACKEND_LEVELS = Array.from({length: MAX_LEVELS}, (_, i) => Math.floor(5000 * Math.pow(1.22, i)));
 
-// ЖЕСТКО ЗАПОЛНЕННЫЕ МАССИВЫ (БОЛЬШЕ НЕТ КРАША SYNTAXERROR)
-const DAILY_REWARDS =;
+// ФИКС ОШИБКИ: Массив удален. Вместо него используется динамический расчет наград по формуле
 const ENERGY_BOOST_CONFIG = [
   { amount: 300, price: 150 },
   { amount: 500, price: 300 },
@@ -47,9 +47,9 @@ const UserSchema = new mongoose.Schema({
   energy: { type: Number, default: 1000 }, 
   maxEnergy: { type: Number, default: 1000 }, 
   multitapLevel: { type: Number, default: 1 }, 
-  offlineMiningLevel: { type: Number, default: 1 }, 
-  beesCountLevel: { type: Number, default: 0 },     
-  energyLimitLevel: { type: Number, default: 1 },   
+  offlineMiningLevel: { type: Number, default: 1 }, // Уровень АСИК
+  beesCountLevel: { type: Number, default: 0 },     // Уровень Пчёл
+  energyLimitLevel: { type: Number, default: 1 },   // Циклический уровень бака (1-4)
   referrals: [{ userId: { type: String }, username: { type: String } }],
   lastDailyClaim: { type: String, default: "" },    
   dailyStreak: { type: Number, default: 0 },         
@@ -198,6 +198,7 @@ app.post('/api/user/buy-card', async (req, res) => {
   } catch (error) { res.status(500).json({ success: false }); }
 });
 
+// АБСОЛЮТНО ЗАЩИЩЕННЫЙ ДИНАМИЧЕСКИЙ РАСЧЕТ НАГРАД ОТ 5К ДО 100К БЕЗ ИСПОЛЬЗОВАНИЯ МАССИВА БЛОКИРОВКИ
 app.post('/api/user/claim-daily', async (req, res) => {
   try {
     const { telegramId } = req.body;
@@ -219,19 +220,16 @@ app.post('/api/user/claim-daily', async (req, res) => {
       user.dailyStreak = 0;
     }
 
-    const currentReward = DAILY_REWARDS[user.dailyStreak];
+    // Чистая нарастающая GameFi формула расчета: День 1 = 5,000, плавно увеличиваясь до 100,000 на День 7
+    let currentReward = 5000;
+    if (user.dailyStreak > 0) {
+      currentReward = Math.floor(5000 + ((100000 - 5000) / 6) * user.dailyStreak);
+    }
+
     user.balance += currentReward;
     user.totalEarned += currentReward;
     user.lastDailyClaim = todayStr;
 
-    user.recalculateLevel = function() {
-      let targetLevel = 1;
-      for (let i = 0; i < BACKEND_LEVELS.length; i++) {
-        if (this.totalEarned >= BACKEND_LEVELS[i]) targetLevel = i + 2;
-        else break;
-      }
-      this.level = Math.min(MAX_LEVELS, targetLevel);
-    };
     user.recalculateLevel();
     await user.save();
     res.json({ success: true, user, rewardClaimed: currentReward });
@@ -249,6 +247,6 @@ app.post('/api/user/save-wallet', async (req, res) => {
 
 const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/tap_game';
 mongoose.connect(mongoUri).then(() => {
-  app.listen(PORT, () => console.log(`🚀 GameFi сервер успешно запущен на порту ${PORT}`));
+  app.listen(PORT, () => console.log(`🚀 GameFi сервер запущен без ошибок синтаксиса на порту ${PORT}`));
 });
 
