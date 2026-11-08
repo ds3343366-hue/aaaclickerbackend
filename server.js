@@ -4,7 +4,11 @@ const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { TonClient, WalletContractV4, internal, toNano } = require('@ton/ton');
 const { mnemonicToPrivateKey } = require('@ton/crypto');
-require('dotenv').config();
+
+// Безопасная инициализация dotenv: загружаем файл только если мы НЕ на Render
+if (process.env.NODE_ENV !== 'production') {
+    require('dotenv').config();
+}
 
 const app = express();
 
@@ -15,10 +19,17 @@ app.use(cors({
 }));
 app.use(express.json());
 
-mongoose.connect(process.env.MONGODB_URI)
+// Защищенный выбор URI: приоритет отдается системным переменным Render
+const mongoURI = process.env.MONGODB_URI;
+
+if (!mongoURI) {
+    console.error('❌ Критическая ошибка: Переменная MONGODB_URI не обнаружена в системе!');
+    process.exit(1); // Останавливаем сервер, если переменная пустая
+}
+
+mongoose.connect(mongoURI)
     .then(() => console.log('📦 Успешное подключение к MongoDB'))
     .catch(err => console.error('❌ Ошибка подключения к MongoDB:', err));
-
 const userSchema = new mongoose.Schema({
     tg_id: { type: Number, required: true, unique: true },
     balance: { type: Number, default: 0 },
@@ -45,6 +56,7 @@ const tonClient = new TonClient({
     endpoint: TON_ENDPOINT,
     apiKey: TON_API_KEY
 });
+
 function verifyTelegramWebAppData(req, res, next) {
     const { initData } = req.body;
     
@@ -62,7 +74,6 @@ function verifyTelegramWebAppData(req, res, next) {
         const hash = q.get('hash');
         q.delete('hash');
         
-        // Сортируем параметры по алфавиту ключей перед валидацией хэша
         q.sort(); 
         
         const items = Array.from(q.entries())
@@ -85,36 +96,6 @@ function verifyTelegramWebAppData(req, res, next) {
         return res.status(500).json({ error: "Internal Auth Error", details: e.message }); 
     }
 }
-
-app.post('/api/sync', verifyTelegramWebAppData, async (req, res) => {
-    const userId = req.tgUserId;
-    try {
-        let user = await User.findOne({ tg_id: userId });
-        if (!user) {
-            user = new User({ tg_id: userId });
-            await user.save();
-        }
-        
-        const now = Date.now();
-        const lastClaim = new Date(user.last_claim_time).getTime();
-        const elapsed = now - lastClaim;
-        const MIN_CLAIM_TIME = 3 * 60 * 60 * 1000;  
-        const MAX_CLAIM_TIME = 8 * 60 * 60 * 1000;  
-        
-        let effectiveElapsed = Math.min(elapsed, MAX_CLAIM_TIME);
-        let minedAmount = elapsed >= MIN_CLAIM_TIME ? (effectiveElapsed / (1000 * 60 * 60)) * user.passive_rate : 0;
-
-        res.json({
-            balance: Number(user.balance),
-            clickPower: user.click_power,
-            passiveRate: user.passive_rate,
-            minedAmount: Number(minedAmount.toFixed(2)),
-            canClaim: elapsed >= MIN_CLAIM_TIME,
-            secondsToClaim: elapsed < MIN_CLAIM_TIME ? Math.ceil((MIN_CLAIM_TIME - elapsed) / 1000) : 0,
-            walletAddress: user.wallet_address
-        });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
 app.post('/api/click', verifyTelegramWebAppData, async (req, res) => {
     try {
         const user = await User.findOne({ tg_id: req.tgUserId });
@@ -236,11 +217,26 @@ app.post('/api/admin/airdrop/run', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    res.json({ app: "Bee GameFi Hive Clicker", status: "ready" });
+    res.json({ app: "Cyber Miner Mongo Backend", status: "ready" });
 });
 
+// ============================================================================
+// ИНФОРМАТИВНЫЙ СТАРТ СЕРВЕРА С ВЫВОДОМ НАСТРОЕК ОКРУЖЕНИЯ
+// ============================================================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 Бэкенд успешно запущен и готов обрабатывать запросы на порту ${PORT}`);
+    console.log(`\n==================================================`);
+    console.log(`🚀 БЭКЕНД УСПЕШНО ЗАПУЩЕН НА ПОРТУ: ${PORT}`);
+    console.log(`📦 ДАННЫЕ ИЗ .env / RENDER ENVIRONMENT:`);
+    
+    // Безопасно маскируем логин и пароль от базы данных Atlas в логах
+    const maskedURI = mongoURI.replace(/\/\/.*@/, '//***:***@');
+    console.log(`   🔌 MONGODB_URI: ${maskedURI}`);
+    
+    console.log(`   🤖 BOT_TOKEN:   ${BOT_TOKEN ? '✅ Загружен (Скрыт)' : '❌ ОТСУТСТВУЕТ!'}`);
+    console.log(`   💎 TON_NODE:    ${TON_ENDPOINT}`);
+    console.log(`   🔑 TON_WALLET:  ${process.env.TON_MNEMONIC ? '✅ Мнемоника привязана' : '❌ ОТСУТСТВУЕТ!'}`);
+    console.log(`   👑 ADMIN_KEY:   ${process.env.ADMIN_SECRET_KEY ? '✅ Пароль задан' : '❌ ОТСУТСТВУЕТ!'}`);
+    console.log(`==================================================\n`);
 });
 
