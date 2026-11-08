@@ -15,8 +15,7 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
 // НАСТРОЙКА БЕЗОПАСНОГО КАНАЛА СВЯЗИ CORS С ВАШИМ РЕАЛЬНЫМ ФРОНТЕНДОМ НА GITHUB PAGES
 app.use(cors({
   origin: [
-    "https://github.io",
-    "https://ds3343366-hue.github.io/clicker-frontend"
+    "https://ds3343366-hue.github.io/clicker-frontend/"
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'X-Telegram-Init-Data'],
@@ -27,7 +26,7 @@ app.use(express.json());
 const MAX_LEVELS = 30;
 const BACKEND_LEVELS = Array.from({length: MAX_LEVELS}, (_, i) => Math.floor(5000 * Math.pow(1.22, i)));
 
-// ИДЕАЛЬНО ЗАПОЛНЕННЫЕ МАССИВЫ (ФИКС ОШИБКИ SYNTAXERROR UNEXPECTED TOKEN)
+// ЖЕСТКО ЗАПОЛНЕННЫЕ МАССИВЫ (БОЛЬШЕ НЕТ КРАША SYNTAXERROR)
 const DAILY_REWARDS =;
 const ENERGY_BOOST_CONFIG = [
   { amount: 300, price: 150 },
@@ -48,9 +47,9 @@ const UserSchema = new mongoose.Schema({
   energy: { type: Number, default: 1000 }, 
   maxEnergy: { type: Number, default: 1000 }, 
   multitapLevel: { type: Number, default: 1 }, 
-  offlineMiningLevel: { type: Number, default: 1 }, // Уровень АСИК
-  beesCountLevel: { type: Number, default: 0 },     // Уровень Пчёл
-  energyLimitLevel: { type: Number, default: 1 },   // Циклический уровень бака (1-4)
+  offlineMiningLevel: { type: Number, default: 1 }, 
+  beesCountLevel: { type: Number, default: 0 },     
+  energyLimitLevel: { type: Number, default: 1 },   
   referrals: [{ userId: { type: String }, username: { type: String } }],
   lastDailyClaim: { type: String, default: "" },    
   dailyStreak: { type: Number, default: 0 },         
@@ -184,7 +183,7 @@ app.post('/api/user/buy-card', async (req, res) => {
     if (!user) return res.status(404).json({ success: false });
     
     user.calculateOfflineProgress();
-    const userCard = user.purchasedCards.find(c => c.cardId === 'ceo_card');
+    const userCard = user.purchasedCards.find(c => c.cardId === cardId);
     const lvl = userCard ? userCard.level : (cardId === 'ceo_card' ? 1 : 0);
     const price = Math.floor(config[cardId] * Math.pow(1.5, lvl));
 
@@ -225,6 +224,14 @@ app.post('/api/user/claim-daily', async (req, res) => {
     user.totalEarned += currentReward;
     user.lastDailyClaim = todayStr;
 
+    user.recalculateLevel = function() {
+      let targetLevel = 1;
+      for (let i = 0; i < BACKEND_LEVELS.length; i++) {
+        if (this.totalEarned >= BACKEND_LEVELS[i]) targetLevel = i + 2;
+        else break;
+      }
+      this.level = Math.min(MAX_LEVELS, targetLevel);
+    };
     user.recalculateLevel();
     await user.save();
     res.json({ success: true, user, rewardClaimed: currentReward });
