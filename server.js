@@ -12,6 +12,7 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
   bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 }
 
+// Открытый CORS для инлайн-кнопок и TON Connect
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -38,6 +39,7 @@ const UPGRADE_CARDS_CONFIG = {
 const MAX_LEVELS = 30;
 const BACKEND_LEVELS = Array.from({length: MAX_LEVELS}, (_, i) => Math.floor(5000 * Math.pow(1.22, i)));
 
+// Схема пользователя MongoDB (Добавлено поле lastDailyClaim для блокировки накрутки бонуса)
 const UserSchema = new mongoose.Schema({
   telegramId: { type: String, required: true, unique: true },
   username: { type: String, default: '' },
@@ -56,6 +58,7 @@ const UserSchema = new mongoose.Schema({
   referrals: [{ userId: { type: String }, username: { type: String } }],
   todayCombo: [{ type: String }], 
   lastComboDate: { type: String, default: "" },
+  lastDailyClaim: { type: String, default: "" }, // Хранит дату последнего успешного входа: YYYY-MM-DD
   walletAddress: { type: String, default: "" }
 }, { timestamps: true });
 
@@ -68,12 +71,12 @@ UserSchema.methods.recalculateLevel = function() {
   if (targetLevel > MAX_LEVELS) targetLevel = MAX_LEVELS;
   this.level = targetLevel;
 };
+
 UserSchema.methods.calculateOfflineProgress = function() {
   const now = new Date();
   if (!this.lastSync) { this.lastSync = now; return 0; }
   const secondsOffline = Math.floor((now - this.lastSync) / 1000);
   if (secondsOffline < 1) return 0;
-  if (this.level >= 30) { this.lastSync = now; return 0; }
 
   const asicHourlyProfit = (this.offlineMiningLevel - 1) * 50;
   const totalHourlyProfit = this.profitPerHour + asicHourlyProfit;
@@ -82,10 +85,8 @@ UserSchema.methods.calculateOfflineProgress = function() {
   if (totalHourlyProfit > 0) {
     const profitPerSecond = totalHourlyProfit / 3600;
     earnedOffline = Math.floor(secondsOffline * profitPerSecond);
-    if (earnedOffline > 0) {
-      this.balance += earnedOffline;
-      this.totalEarned += earnedOffline;
-    }
+    this.balance += earnedOffline;
+    this.totalEarned += earnedOffline;
   }
   const recoveryPerSecond = this.maxEnergy / 10800; 
   this.energy = Math.min(this.maxEnergy, this.energy + Math.floor(secondsOffline * recoveryPerSecond));
@@ -95,7 +96,6 @@ UserSchema.methods.calculateOfflineProgress = function() {
 };
 
 const User = mongoose.model('User', UserSchema);
-
 app.post('/api/user/sync', async (req, res) => {
   try {
     const { telegramId, username, localBalance, localTotalEarned } = req.body;
@@ -182,7 +182,6 @@ app.post('/api/user/buy-card', async (req, res) => {
     res.json({ success: true, user });
   } catch (error) { res.status(500).json({ success: false, error: "Ошибка сервера" }); }
 });
-
 const CURRENT_SECRET_COMBO = ['ceo_card', 'crypto_card'];
 const COMBO_REWARD = 250000;
 
@@ -213,11 +212,38 @@ app.post('/api/user/check-combo', async (req, res) => {
   } catch (error) { res.status(500).json({ success: false, error: error.message }); }
 });
 
+// === НОВЫЙ ВЫДЕЛЕННЫЙ РОУТ ЕЖЕДНЕВНОГО ВХОДА (СТРОГО 1 РАЗ В ДЕНЬ) ===
+app.post('/api/user/claim-daily', async (req, res) => {
+  try {
+    const { telegramId } = req.body;
+    const user = await User.findOne({ telegramId });
+    if (!user) return res.status(404).json({ success: false, error: "Игрок не найден" });
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    
+    // Жесткая проверка на бэкенде по дате сервера
+    if (user.lastDailyClaim === todayStr) {
+      return res.status(400).json({ success: false, error: "Сегодня бонус уже был забран!" });
+    }
+
+    user.balance += 5000;
+    user.totalEarned += 5000;
+    user.lastDailyClaim = todayStr; // Фиксируем сегодняшнюю дату
+    
+    user.recalculateLevel();
+    await user.save();
+    
+    res.json({ success: true, user, msg: "Бонус +5,000 🍯 успешно начислен!" });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.post('/api/user/save-wallet', async (req, res) => {
   try {
     const { telegramId, walletAddress } = req.body;
     let user = await User.findOne({ telegramId });
-    if (!user) user = new User({ telegramId, username: "Пчёлка TON" });
+    if (!user) return res.status(404).json({ success: false, error: "Юзер не найден" });
     user.walletAddress = walletAddress || "";
     await user.save();
     res.json({ success: true, user });
