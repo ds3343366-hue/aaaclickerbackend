@@ -7,7 +7,7 @@ const { mnemonicToPrivateKey } = require('@ton/crypto');
 require('dotenv').config();
 
 const app = express();
-// Настройка CORS для безопасности запросов с GitHub Pages
+
 app.use(cors({
     origin: '*', 
     methods: ['GET', 'POST'],
@@ -15,10 +15,10 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Подключение к вашей базе данных MongoDB Atlas
 mongoose.connect(process.env.MONGODB_URI)
     .then(() => console.log('📦 Успешное подключение к MongoDB'))
     .catch(err => console.error('❌ Ошибка подключения к MongoDB:', err));
+
 const userSchema = new mongoose.Schema({
     tg_id: { type: Number, required: true, unique: true },
     balance: { type: Number, default: 0 },
@@ -29,9 +29,8 @@ const userSchema = new mongoose.Schema({
 });
 
 const User = mongoose.model('User', userSchema);
-
 const BOT_TOKEN = process.env.BOT_TOKEN;
-// Жесткая серверная конфигурация стоимости карт (защита от подмены цен)
+
 const ITEM_PRICES = {
     asic: 500,
     ton: 2000,
@@ -39,7 +38,6 @@ const ITEM_PRICES = {
     ai: 1000
 };
 
-// Инициализация TON клиента (Mainnet/Testnet берется из .env)
 const TON_ENDPOINT = process.env.TON_ENDPOINT || 'https://toncenter.com'; 
 const TON_API_KEY = process.env.TON_API_KEY; 
 
@@ -50,7 +48,6 @@ const tonClient = new TonClient({
 function verifyTelegramWebAppData(req, res, next) {
     const { initData } = req.body;
     
-    // Поддержка режима тестирования на ПК вне Telegram
     if (process.env.NODE_ENV !== 'production' && (!initData || initData === "demo_init_data_for_testing")) {
         req.tgUserId = 99999; 
         return next();
@@ -65,7 +62,12 @@ function verifyTelegramWebAppData(req, res, next) {
         const hash = q.get('hash');
         q.delete('hash');
         
-        const items = Array.from(q.entries()).map(([k, v]) => `${k}=${v}`).sort().join('\n');
+        // Сортируем параметры по алфавиту ключей перед валидацией хэша
+        q.sort(); 
+        
+        const items = Array.from(q.entries())
+            .map(([k, v]) => `${k}=${v}`)
+            .join('\n');
         
         const secretKey = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
         const calculatedHash = crypto.createHmac('sha256', secretKey).update(items).digest('hex');
@@ -83,6 +85,7 @@ function verifyTelegramWebAppData(req, res, next) {
         return res.status(500).json({ error: "Internal Auth Error", details: e.message }); 
     }
 }
+
 app.post('/api/sync', verifyTelegramWebAppData, async (req, res) => {
     const userId = req.tgUserId;
     try {
@@ -95,8 +98,8 @@ app.post('/api/sync', verifyTelegramWebAppData, async (req, res) => {
         const now = Date.now();
         const lastClaim = new Date(user.last_claim_time).getTime();
         const elapsed = now - lastClaim;
-        const MIN_CLAIM_TIME = 3 * 60 * 60 * 1000;  // 3 часа
-        const MAX_CLAIM_TIME = 8 * 60 * 60 * 1000;  // Макс. 8 часов накопления
+        const MIN_CLAIM_TIME = 3 * 60 * 60 * 1000;  
+        const MAX_CLAIM_TIME = 8 * 60 * 60 * 1000;  
         
         let effectiveElapsed = Math.min(elapsed, MAX_CLAIM_TIME);
         let minedAmount = elapsed >= MIN_CLAIM_TIME ? (effectiveElapsed / (1000 * 60 * 60)) * user.passive_rate : 0;
@@ -142,10 +145,10 @@ app.post('/api/claim', verifyTelegramWebAppData, async (req, res) => {
         res.json({ success: true, balance: Number(user.balance) });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
+
 app.post('/api/buy', verifyTelegramWebAppData, async (req, res) => {
     const { itemType } = req.body;
     if (!ITEM_PRICES[itemType]) return res.status(400).json({ error: "Invalid item type" });
-
     const serverPrice = ITEM_PRICES[itemType];
 
     try {
@@ -161,7 +164,6 @@ app.post('/api/buy', verifyTelegramWebAppData, async (req, res) => {
         if (itemType === 'ai') user.click_power += 2;
 
         await user.save();
-        
         res.json({ 
             success: true, 
             balance: Number(user.balance), 
@@ -180,6 +182,7 @@ app.post('/api/reset', verifyTelegramWebAppData, async (req, res) => {
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
+
 app.post('/api/wallet/connect', verifyTelegramWebAppData, async (req, res) => {
     const { address } = req.body; 
     if (!address) return res.status(400).json({ error: "Wallet address is required" });
@@ -231,12 +234,11 @@ app.post('/api/admin/airdrop/run', async (req, res) => {
         res.json({ success: true, processedUsers: participants.length });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
-// Эндпоинт для проверки статуса на Render (Health check)
+
 app.get('/', (req, res) => {
-    res.json({ app: "Cyber Miner Mongo Backend", status: "ready" });
+    res.json({ app: "Bee GameFi Hive Clicker", status: "ready" });
 });
 
-// Запуск прослушивания порта
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`🚀 Бэкенд успешно запущен и готов обрабатывать запросы на порту ${PORT}`);
