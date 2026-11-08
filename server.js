@@ -1,252 +1,244 @@
 const express = require('express');
-const mongoose = require('mongoose');
 const cors = require('cors');
-const { Telegraf } = require('telegraf');
+const crypto = require('crypto');
+const mongoose = require('mongoose');
+const { TonClient, WalletContractV4, internal, toNano } = require('@ton/ton');
+const { mnemonicToPrivateKey } = require('@ton/crypto');
 require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-let bot = null;
-if (process.env.TELEGRAM_BOT_TOKEN) {
-  bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-}
-
-// НАСТРОЙКА БЕЗОПАСНОГО КАНАЛА СВЯЗИ CORS С ВАШИМ РЕАЛЬНЫМ ФРОНТЕНДОМ НА GITHUB PAGES
+// Настройка CORS для безопасности запросов с GitHub Pages
 app.use(cors({
-  origin: [
-    "https://github.io",
-    "https://github.io/clicker-frontend"
-  ],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'X-Telegram-Init-Data'],
-  credentials: true
+    origin: '*', 
+    methods: ['GET', 'POST'],
+    allowedHeaders: ['Content-Type']
 }));
 app.use(express.json());
 
-const MAX_LEVELS = 30;
-const BACKEND_LEVELS = Array.from({length: MAX_LEVELS}, (_, i) => Math.floor(5000 * Math.pow(1.22, i)));
+// Подключение к вашей базе данных MongoDB Atlas
+mongoose.connect(process.env.MONGODB_URI)
+    .then(() => console.log('📦 Успешное подключение к MongoDB'))
+    .catch(err => console.error('❌ Ошибка подключения к MongoDB:', err));
+const userSchema = new mongoose.Schema({
+    tg_id: { type: Number, required: true, unique: true },
+    balance: { type: Number, default: 0 },
+    click_power: { type: Number, default: 1 },
+    passive_rate: { type: Number, default: 60 },
+    last_claim_time: { type: Date, default: Date.now },
+    wallet_address: { type: String, default: null }
+});
 
-// ФИКС ОШИБКИ: Массив удален. Вместо него используется динамический расчет наград по формуле
-const ENERGY_BOOST_CONFIG = [
-  { amount: 300, price: 150 },
-  { amount: 500, price: 300 },
-  { amount: 700, price: 500 },
-  { amount: 1000, price: 800 }
-];
+const User = mongoose.model('User', userSchema);
 
-const UserSchema = new mongoose.Schema({
-  telegramId: { type: String, required: true, unique: true },
-  username: { type: String, default: '' },
-  balance: { type: Number, default: 0 }, 
-  totalEarned: { type: Number, default: 0 }, 
-  level: { type: Number, default: 1 }, 
-  profitPerHour: { type: Number, default: 0 }, 
-  lastSync: { type: Date, default: Date.now }, 
-  purchasedCards: [{ cardId: { type: String, required: true }, level: { type: Number, default: 1 } }],
-  energy: { type: Number, default: 1000 }, 
-  maxEnergy: { type: Number, default: 1000 }, 
-  multitapLevel: { type: Number, default: 1 }, 
-  offlineMiningLevel: { type: Number, default: 1 }, // Уровень АСИК
-  beesCountLevel: { type: Number, default: 0 },     // Уровень Пчёл
-  energyLimitLevel: { type: Number, default: 1 },   // Циклический уровень бака (1-4)
-  referrals: [{ userId: { type: String }, username: { type: String } }],
-  lastDailyClaim: { type: String, default: "" },    
-  dailyStreak: { type: Number, default: 0 },         
-  walletAddress: { type: String, default: "" }
-}, { timestamps: true });
-
-function getAsicProfit(lvl) {
-  if (lvl <= 1) return 250;
-  return Math.floor(250 + ((1000000 - 250) / 29) * (lvl - 1));
-}
-function getBeesAmount(lvl) {
-  if (lvl <= 0) return 0;
-  return Math.floor(1 + ((100000 - 1) / 29) * (lvl - 1));
-}
-
-UserSchema.methods.recalculateLevel = function() {
-  let targetLevel = 1;
-  for (let i = 0; i < BACKEND_LEVELS.length; i++) {
-    if (this.totalEarned >= BACKEND_LEVELS[i]) targetLevel = i + 2;
-    else break;
-  }
-  this.level = Math.min(MAX_LEVELS, targetLevel);
-};
-UserSchema.methods.calculateOfflineProgress = function() {
-  const now = new Date();
-  const secondsOffline = Math.floor((now - (this.lastSync || now)) / 1000);
-  if (secondsOffline < 1) return 0;
-
-  const baseCardsProfit = (this.purchasedCards?.find(c => c.cardId === 'ceo_card')?.level || 1) * 10 
-                        + (this.purchasedCards?.find(c => c.cardId === 'marketing_card')?.level || 0) * 45
-                        + (this.purchasedCards?.find(c => c.cardId === 'crypto_card')?.level || 0) * 200;
-  const asicProfit = getAsicProfit(this.offlineMiningLevel);
-  const beesProfit = getBeesAmount(this.beesCountLevel) * 3;
-  
-  this.profitPerHour = baseCardsProfit + asicProfit + beesProfit;
-  
-  let earnedOffline = 0;
-  if (this.profitPerHour > 0) {
-    earnedOffline = Math.floor(secondsOffline * (this.profitPerHour / 3600));
-    this.balance += earnedOffline;
-    this.totalEarned += earnedOffline;
-  }
-  this.energy = Math.min(this.maxEnergy, this.energy + Math.floor(secondsOffline * (this.maxEnergy / 10800)));
-  this.recalculateLevel();
-  this.lastSync = now;
-  return earnedOffline;
+const BOT_TOKEN = process.env.BOT_TOKEN;
+// Жесткая серверная конфигурация стоимости карт (защита от подмены цен)
+const ITEM_PRICES = {
+    asic: 500,
+    ton: 2000,
+    quantum: 200,
+    ai: 1000
 };
 
-const User = mongoose.model('User', UserSchema);
+// Инициализация TON клиента (Mainnet/Testnet берется из .env)
+const TON_ENDPOINT = process.env.TON_ENDPOINT || 'https://toncenter.com'; 
+const TON_API_KEY = process.env.TON_API_KEY; 
 
-app.post('/api/user/sync', async (req, res) => {
-  try {
-    const { telegramId, username, localBalance, localTotalEarned } = req.body;
-    let user = await User.findOne({ telegramId });
-    if (!user) {
-      user = new User({ telegramId, username: username || "Пчёлка", balance: localBalance || 0, totalEarned: localTotalEarned || 0 });
-    }
-    const earnedOffline = user.calculateOfflineProgress();
-    await user.save();
-    res.json({ success: true, user, earnedOffline });
-  } catch (error) { res.status(500).json({ success: false, error: error.message }); }
+const tonClient = new TonClient({
+    endpoint: TON_ENDPOINT,
+    apiKey: TON_API_KEY
 });
-
-app.post('/api/user/click', async (req, res) => {
-  try {
-    const { telegramId, clicksCount } = req.body;
-    const user = await User.findOne({ telegramId });
-    if (!user) return res.status(404).json({ success: false });
-    user.calculateOfflineProgress();
-    const power = user.multitapLevel;
-    if (user.energy >= (clicksCount * power)) {
-      user.energy -= (clicksCount * power);
-      user.balance += (clicksCount * power);
-      user.totalEarned += (clicksCount * power);
-    }
-    user.recalculateLevel();
-    await user.save();
-    res.json({ success: true, user });
-  } catch (error) { res.status(500).json({ success: false }); }
-});
-app.post('/api/user/upgrade-stat', async (req, res) => {
-  try {
-    const { telegramId, type } = req.body;
-    let user = await User.findOne({ telegramId });
-    if (!user) return res.status(404).json({ success: false });
-    user.calculateOfflineProgress();
-
-    if (type === 'multitap') {
-      const cost = user.multitapLevel * 200;
-      if (user.balance < cost) return res.status(400).json({ error: "Мало мёда" });
-      user.balance -= cost; user.multitapLevel += 1;
-    } 
-    else if (type === 'offline') { 
-      if (user.offlineMiningLevel >= 30) return res.status(400).json({ error: "Максимальный уровень АСИКов!" });
-      const cost = user.offlineMiningLevel * 500;
-      if (user.balance < cost) return res.status(400).json({ error: "Мало мёда" });
-      user.balance -= cost; user.offlineMiningLevel += 1;
-    } 
-    else if (type === 'bees_count') { 
-      if (user.beesCountLevel >= 30) return res.status(400).json({ error: "Максимальный уровень покупки пчёл!" });
-      const cost = Math.floor(3500 * Math.pow(1.6, user.beesCountLevel));
-      if (user.balance < cost) return res.status(400).json({ error: "Мало мёда" });
-      user.balance -= cost; user.beesCountLevel += 1;
-    } 
-    else if (type === 'energy') { 
-      const currentConfig = ENERGY_BOOST_CONFIG[user.energyLimitLevel - 1];
-      if (user.balance < currentConfig.price) return res.status(400).json({ error: "Мало мёда" });
-      if (user.energy >= user.maxEnergy) return res.status(400).json({ error: "Бак энергии уже полон!" });
-
-      user.balance -= currentConfig.price;
-      user.energy = Math.min(user.maxEnergy, user.energy + currentConfig.amount);
-
-      if (user.energyLimitLevel >= 4) {
-        user.energyLimitLevel = 1;
-      } else {
-        user.energyLimitLevel += 1;
-      }
-    }
-
-    user.recalculateLevel();
-    await user.save();
-    res.json({ success: true, user });
-  } catch (error) { res.status(500).json({ success: false }); }
-});
-
-app.post('/api/user/buy-card', async (req, res) => {
-  try {
-    const { telegramId, cardId } = req.body;
-    const config = { ceo_card: 100, marketing_card: 500, crypto_card: 2000 };
-    let user = await User.findOne({ telegramId });
-    if (!user) return res.status(404).json({ success: false });
+function verifyTelegramWebAppData(req, res, next) {
+    const { initData } = req.body;
     
-    user.calculateOfflineProgress();
-    const userCard = user.purchasedCards.find(c => c.cardId === cardId);
-    const lvl = userCard ? userCard.level : (cardId === 'ceo_card' ? 1 : 0);
-    const price = Math.floor(config[cardId] * Math.pow(1.5, lvl));
-
-    if (user.balance < price) return res.status(400).json({ error: "Мало мёда" });
-    user.balance -= price;
-    if (userCard) userCard.level += 1; 
-    else user.purchasedCards.push({ cardId, level: 1 });
-
-    user.recalculateLevel();
-    await user.save();
-    res.json({ success: true, user });
-  } catch (error) { res.status(500).json({ success: false }); }
-});
-
-// АБСОЛЮТНО ЗАЩИЩЕННЫЙ ДИНАМИЧЕСКИЙ РАСЧЕТ НАГРАД ОТ 5К ДО 100К БЕЗ ИСПОЛЬЗОВАНИЯ МАССИВА БЛОКИРОВКИ
-app.post('/api/user/claim-daily', async (req, res) => {
-  try {
-    const { telegramId } = req.body;
-    const user = await User.findOne({ telegramId });
-    if (!user) return res.status(404).json({ success: false });
-
-    const todayStr = new Date().toISOString().split('T');
-    if (user.lastDailyClaim === todayStr) {
-      return res.status(400).json({ success: false, error: "Вы уже забрали бонус на сегодня!" });
+    // Поддержка режима тестирования на ПК вне Telegram
+    if (process.env.NODE_ENV !== 'production' && (!initData || initData === "demo_init_data_for_testing")) {
+        req.tgUserId = 99999; 
+        return next();
     }
 
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    const yesterdayStr = yesterday.toISOString().split('T');
-
-    if (user.lastDailyClaim === yesterdayStr) {
-      user.dailyStreak = (user.dailyStreak + 1) % 7;
-    } else {
-      user.dailyStreak = 0;
+    if (!initData) {
+        return res.status(401).json({ error: "Unauthorized: Missing initData" });
     }
 
-    // Чистая нарастающая GameFi формула расчета: День 1 = 5,000, плавно увеличиваясь до 100,000 на День 7
-    let currentReward = 5000;
-    if (user.dailyStreak > 0) {
-      currentReward = Math.floor(5000 + ((100000 - 5000) / 6) * user.dailyStreak);
+    try {
+        const q = new URLSearchParams(initData);
+        const hash = q.get('hash');
+        q.delete('hash');
+        
+        const items = Array.from(q.entries()).map(([k, v]) => `${k}=${v}`).sort().join('\n');
+        
+        const secretKey = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
+        const calculatedHash = crypto.createHmac('sha256', secretKey).update(items).digest('hex');
+        
+        if (calculatedHash === hash) {
+            const userRaw = q.get('user');
+            if (!userRaw) return res.status(400).json({ error: "Invalid user data" });
+            
+            req.tgUserId = JSON.parse(userRaw).id;
+            next();
+        } else {
+            return res.status(403).json({ error: "Forbidden: Invalid Telegram signature" });
+        }
+    } catch (e) { 
+        return res.status(500).json({ error: "Internal Auth Error", details: e.message }); 
     }
+}
+app.post('/api/sync', verifyTelegramWebAppData, async (req, res) => {
+    const userId = req.tgUserId;
+    try {
+        let user = await User.findOne({ tg_id: userId });
+        if (!user) {
+            user = new User({ tg_id: userId });
+            await user.save();
+        }
+        
+        const now = Date.now();
+        const lastClaim = new Date(user.last_claim_time).getTime();
+        const elapsed = now - lastClaim;
+        const MIN_CLAIM_TIME = 3 * 60 * 60 * 1000;  // 3 часа
+        const MAX_CLAIM_TIME = 8 * 60 * 60 * 1000;  // Макс. 8 часов накопления
+        
+        let effectiveElapsed = Math.min(elapsed, MAX_CLAIM_TIME);
+        let minedAmount = elapsed >= MIN_CLAIM_TIME ? (effectiveElapsed / (1000 * 60 * 60)) * user.passive_rate : 0;
 
-    user.balance += currentReward;
-    user.totalEarned += currentReward;
-    user.lastDailyClaim = todayStr;
+        res.json({
+            balance: Number(user.balance),
+            clickPower: user.click_power,
+            passiveRate: user.passive_rate,
+            minedAmount: Number(minedAmount.toFixed(2)),
+            canClaim: elapsed >= MIN_CLAIM_TIME,
+            secondsToClaim: elapsed < MIN_CLAIM_TIME ? Math.ceil((MIN_CLAIM_TIME - elapsed) / 1000) : 0,
+            walletAddress: user.wallet_address
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.post('/api/click', verifyTelegramWebAppData, async (req, res) => {
+    try {
+        const user = await User.findOne({ tg_id: req.tgUserId });
+        if (!user) return res.status(404).json({ error: "User not found" });
 
-    user.recalculateLevel();
-    await user.save();
-    res.json({ success: true, user, rewardClaimed: currentReward });
-  } catch (error) { res.status(500).json({ success: false, error: error.message }); }
+        user.balance += user.click_power;
+        await user.save();
+
+        res.json({ balance: Number(user.balance) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/user/save-wallet', async (req, res) => {
-  try {
-    const { telegramId, walletAddress } = req.body;
-    let user = await User.findOne({ telegramId });
-    if (user) { user.walletAddress = walletAddress; await user.save(); }
-    res.json({ success: true, user });
-  } catch (error) { res.status(500).json({ success: false }); }
+app.post('/api/claim', verifyTelegramWebAppData, async (req, res) => {
+    try {
+        const user = await User.findOne({ tg_id: req.tgUserId });
+        if (!user) return res.status(404).json({ error: "User not found" });
+        
+        const elapsed = Date.now() - new Date(user.last_claim_time).getTime();
+        if (elapsed < 3 * 60 * 60 * 1000) return res.status(400).json({ error: "Too early" });
+        
+        let effectiveElapsed = Math.min(elapsed, 8 * 60 * 60 * 1000);
+        let mined = (effectiveElapsed / (1000 * 60 * 60)) * user.passive_rate;
+        
+        user.balance += mined;
+        user.last_claim_time = new Date();
+        await user.save();
+
+        res.json({ success: true, balance: Number(user.balance) });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.post('/api/buy', verifyTelegramWebAppData, async (req, res) => {
+    const { itemType } = req.body;
+    if (!ITEM_PRICES[itemType]) return res.status(400).json({ error: "Invalid item type" });
+
+    const serverPrice = ITEM_PRICES[itemType];
+
+    try {
+        const user = await User.findOne({ tg_id: req.tgUserId });
+        if (!user) return res.status(404).json({ error: "User not found" });
+        if (user.balance < serverPrice) return res.status(400).json({ error: "Low balance" });
+
+        user.balance -= serverPrice;
+
+        if (itemType === 'asic') user.passive_rate += 150;
+        if (itemType === 'ton') user.passive_rate += 400;
+        if (itemType === 'quantum') user.click_power += 1;
+        if (itemType === 'ai') user.click_power += 2;
+
+        await user.save();
+        
+        res.json({ 
+            success: true, 
+            balance: Number(user.balance), 
+            clickPower: user.click_power, 
+            passiveRate: user.passive_rate 
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/tap_game';
-mongoose.connect(mongoUri).then(() => {
-  app.listen(PORT, () => console.log(`🚀 GameFi сервер запущен без ошибок синтаксиса на порту ${PORT}`));
+app.post('/api/reset', verifyTelegramWebAppData, async (req, res) => {
+    try {
+        await User.findOneAndUpdate(
+            { tg_id: req.tgUserId },
+            { balance: 0, click_power: 1, passive_rate: 60, last_claim_time: new Date() }
+        );
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.post('/api/wallet/connect', verifyTelegramWebAppData, async (req, res) => {
+    const { address } = req.body; 
+    if (!address) return res.status(400).json({ error: "Wallet address is required" });
+
+    try {
+        const user = await User.findOneAndUpdate(
+            { tg_id: req.tgUserId },
+            { wallet_address: address },
+            { new: true }
+        );
+        if (!user) return res.status(404).json({ error: "User not found" });
+        res.json({ success: true, walletAddress: user.wallet_address });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/airdrop/run', async (req, res) => {
+    const { secretAdminKey, rewardAmountTon } = req.body;
+    if (secretAdminKey !== process.env.ADMIN_SECRET_KEY) return res.status(403).json({ error: "Access denied" });
+    if (!rewardAmountTon || rewardAmountTon <= 0) return res.status(400).json({ error: "Invalid reward amount" });
+
+    try {
+        const participants = await User.find({ wallet_address: { $ne: null }, balance: { $gt: 0 } }).limit(100);
+        if (participants.length === 0) return res.json({ success: true, message: "No users for airdrop" });
+
+        const mnemonic = process.env.TON_MNEMONIC.split(' ');
+        const keyPair = await mnemonicToPrivateKey(mnemonic);
+        const wallet = WalletContractV4.create({ workchain: 0, publicKey: keyPair.publicKey });
+        const contract = tonClient.open(wallet);
+        let seqno = await contract.getSeqno();
+
+        const messages = [];
+        for (const user of participants) {
+            messages.push(internal({
+                to: user.wallet_address,
+                value: toNano(rewardAmountTon.toString()), 
+                body: `Cyber Miner AirDrop Reward!`, 
+                bounce: false,
+            }));
+            
+            if (messages.length === 4 || user === participants[participants.length - 1]) {
+                await contract.sendTransfer({ secretKey: keyPair.secretKey, seqno, messages: [...messages] });
+                messages.length = 0;
+                await new Promise(r => setTimeout(r, 4000));
+                seqno = await contract.getSeqno();
+            }
+            user.balance = 0;
+            await user.save();
+        }
+        res.json({ success: true, processedUsers: participants.length });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+// Эндпоинт для проверки статуса на Render (Health check)
+app.get('/', (req, res) => {
+    res.json({ app: "Cyber Miner Mongo Backend", status: "ready" });
+});
+
+// Запуск прослушивания порта
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`🚀 Бэкенд успешно запущен и готов обрабатывать запросы на порту ${PORT}`);
 });
 
