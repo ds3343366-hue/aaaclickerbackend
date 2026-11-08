@@ -12,34 +12,29 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
   bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 }
 
-// Открытый CORS для инлайн-кнопок и TON Connect
+// НАСТРОЙКА БЕЗОПАСНОГО КАНАЛА СВЯЗИ CORS С ВАШИМ РЕАЛЬНЫМ ФРОНТЕНДОМ НА GITHUB PAGES
 app.use(cors({
-  origin: '*',
+  origin: [
+    "https://ds3343366-hue.github.io/clicker-frontend/"
+     ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'X-Telegram-Init-Data'],
   credentials: true
 }));
-
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, X-Telegram-Init-Data");
-  if (req.method === "OPTIONS") return res.sendStatus(200);
-  next();
-});
-
 app.use(express.json());
-
-const UPGRADE_CARDS_CONFIG = {
-  ceo_card: { basePrice: 100, baseProfit: 10 },
-  marketing_card: { basePrice: 500, baseProfit: 45 },
-  crypto_card: { basePrice: 2000, baseProfit: 200 }
-};
 
 const MAX_LEVELS = 30;
 const BACKEND_LEVELS = Array.from({length: MAX_LEVELS}, (_, i) => Math.floor(5000 * Math.pow(1.22, i)));
 
-// Схема пользователя MongoDB (Добавлено поле lastDailyClaim для блокировки накрутки бонуса)
+// Жесткие массивы GameFi конфигурации (Накопительный стрик и Конфиг Бак-Энергии)
+const DAILY_REWARDS =;
+const ENERGY_BOOST_CONFIG = [
+  { amount: 300, price: 150 },
+  { amount: 500, price: 300 },
+  { amount: 700, price: 500 },
+  { amount: 1000, price: 800 }
+];
+
 const UserSchema = new mongoose.Schema({
   telegramId: { type: String, required: true, unique: true },
   username: { type: String, default: '' },
@@ -52,15 +47,23 @@ const UserSchema = new mongoose.Schema({
   energy: { type: Number, default: 1000 }, 
   maxEnergy: { type: Number, default: 1000 }, 
   multitapLevel: { type: Number, default: 1 }, 
-  energyLimitLevel: { type: Number, default: 1 }, 
-  offlineMiningLevel: { type: Number, default: 1 }, 
-  referredBy: { type: String, default: null }, 
+  offlineMiningLevel: { type: Number, default: 1 }, // Уровень АСИК
+  beesCountLevel: { type: Number, default: 0 },     // Уровень Пчёл
+  energyLimitLevel: { type: Number, default: 1 },   // Циклический уровень бака (1-4)
   referrals: [{ userId: { type: String }, username: { type: String } }],
-  todayCombo: [{ type: String }], 
-  lastComboDate: { type: String, default: "" },
-  lastDailyClaim: { type: String, default: "" }, // Хранит дату последнего успешного входа: YYYY-MM-DD
+  lastDailyClaim: { type: String, default: "" },    
+  dailyStreak: { type: Number, default: 0 },         
   walletAddress: { type: String, default: "" }
 }, { timestamps: true });
+
+function getAsicProfit(lvl) {
+  if (lvl <= 1) return 250;
+  return Math.floor(250 + ((1000000 - 250) / 29) * (lvl - 1));
+}
+function getBeesAmount(lvl) {
+  if (lvl <= 0) return 0;
+  return Math.floor(1 + ((100000 - 1) / 29) * (lvl - 1));
+}
 
 UserSchema.methods.recalculateLevel = function() {
   let targetLevel = 1;
@@ -68,28 +71,29 @@ UserSchema.methods.recalculateLevel = function() {
     if (this.totalEarned >= BACKEND_LEVELS[i]) targetLevel = i + 2;
     else break;
   }
-  if (targetLevel > MAX_LEVELS) targetLevel = MAX_LEVELS;
-  this.level = targetLevel;
+  this.level = Math.min(MAX_LEVELS, targetLevel);
 };
 
 UserSchema.methods.calculateOfflineProgress = function() {
   const now = new Date();
-  if (!this.lastSync) { this.lastSync = now; return 0; }
-  const secondsOffline = Math.floor((now - this.lastSync) / 1000);
+  const secondsOffline = Math.floor((now - (this.lastSync || now)) / 1000);
   if (secondsOffline < 1) return 0;
 
-  const asicHourlyProfit = (this.offlineMiningLevel - 1) * 50;
-  const totalHourlyProfit = this.profitPerHour + asicHourlyProfit;
+  const baseCardsProfit = (this.purchasedCards?.find(c => c.cardId === 'ceo_card')?.level || 1) * 10 
+                        + (this.purchasedCards?.find(c => c.cardId === 'marketing_card')?.level || 0) * 45
+                        + (this.purchasedCards?.find(c => c.cardId === 'crypto_card')?.level || 0) * 200;
+  const asicProfit = getAsicProfit(this.offlineMiningLevel);
+  const beesProfit = getBeesAmount(this.beesCountLevel) * 3;
+  
+  this.profitPerHour = baseCardsProfit + asicProfit + beesProfit;
+  
   let earnedOffline = 0;
-
-  if (totalHourlyProfit > 0) {
-    const profitPerSecond = totalHourlyProfit / 3600;
-    earnedOffline = Math.floor(secondsOffline * profitPerSecond);
+  if (this.profitPerHour > 0) {
+    earnedOffline = Math.floor(secondsOffline * (this.profitPerHour / 3600));
     this.balance += earnedOffline;
     this.totalEarned += earnedOffline;
   }
-  const recoveryPerSecond = this.maxEnergy / 10800; 
-  this.energy = Math.min(this.maxEnergy, this.energy + Math.floor(secondsOffline * recoveryPerSecond));
+  this.energy = Math.min(this.maxEnergy, this.energy + Math.floor(secondsOffline * (this.maxEnergy / 10800)));
   this.recalculateLevel();
   this.lastSync = now;
   return earnedOffline;
@@ -99,17 +103,11 @@ const User = mongoose.model('User', UserSchema);
 app.post('/api/user/sync', async (req, res) => {
   try {
     const { telegramId, username, localBalance, localTotalEarned } = req.body;
-    if (!telegramId) return res.status(400).json({ success: false, error: "Не указан telegramId" });
     let user = await User.findOne({ telegramId });
     if (!user) {
       user = new User({ telegramId, username: username || "Пчёлка", balance: localBalance || 0, totalEarned: localTotalEarned || 0 });
-    } else {
-      if (username) user.username = username;
-      if (localBalance && localBalance > user.balance) user.balance = localBalance;
-      if (localTotalEarned && localTotalEarned > user.totalEarned) user.totalEarned = localTotalEarned;
     }
     const earnedOffline = user.calculateOfflineProgress();
-    user.recalculateLevel();
     await user.save();
     res.json({ success: true, user, earnedOffline });
   } catch (error) { res.status(500).json({ success: false, error: error.message }); }
@@ -119,161 +117,134 @@ app.post('/api/user/click', async (req, res) => {
   try {
     const { telegramId, clicksCount } = req.body;
     const user = await User.findOne({ telegramId });
-    if (!user) return res.status(404).json({ success: false, error: "Юзер не найден" });
+    if (!user) return res.status(404).json({ success: false });
     user.calculateOfflineProgress();
-    if (clicksCount > 0) {
-      const requiredEnergy = clicksCount * user.multitapLevel;
-      if (user.energy >= requiredEnergy) {
-        user.energy -= requiredEnergy;
-        user.balance += (clicksCount * user.multitapLevel);
-        user.totalEarned += (clicksCount * user.multitapLevel);
-      } else {
-        const possibleClicks = Math.floor(user.energy / user.multitapLevel);
-        if (possibleClicks > 0) {
-          user.energy -= (possibleClicks * user.multitapLevel);
-          user.balance += (possibleClicks * user.multitapLevel);
-          user.totalEarned += (possibleClicks * user.multitapLevel);
-        }
-      }
+    const power = user.multitapLevel;
+    if (user.energy >= (clicksCount * power)) {
+      user.energy -= (clicksCount * power);
+      user.balance += (clicksCount * power);
+      user.totalEarned += (clicksCount * power);
     }
     user.recalculateLevel();
     await user.save();
     res.json({ success: true, user });
-  } catch (error) { res.status(500).json({ success: false, error: error.message }); }
+  } catch (error) { res.status(500).json({ success: false }); }
 });
 
 app.post('/api/user/upgrade-stat', async (req, res) => {
   try {
-    const { telegramId, type, cost } = req.body;
+    const { telegramId, type } = req.body;
     let user = await User.findOne({ telegramId });
-    if (!user) return res.status(404).json({ success: false, error: "Профиль не найден" });
+    if (!user) return res.status(404).json({ success: false });
     user.calculateOfflineProgress();
-    if (user.balance < (cost || 0)) return res.status(400).json({ success: false, error: "Не хватает мёда!" });
-    user.balance -= (cost || 0);
-    if (type === 'multitap') user.multitapLevel += 1;
-    else if (type === 'energy') { user.energyLimitLevel += 1; user.maxEnergy += 500; user.energy = user.maxEnergy; }
-    else if (type === 'offline') user.offlineMiningLevel += 1;
+
+    if (type === 'multitap') {
+      const cost = user.multitapLevel * 200;
+      if (user.balance < cost) return res.status(400).json({ error: "Мало мёда" });
+      user.balance -= cost; user.multitapLevel += 1;
+    } 
+    else if (type === 'offline') { // Улучшение АСИКа улья
+      if (user.offlineMiningLevel >= 30) return res.status(400).json({ error: "Максимальный уровень АСИКов!" });
+      const cost = user.offlineMiningLevel * 500;
+      if (user.balance < cost) return res.status(400).json({ error: "Мало мёда" });
+      user.balance -= cost; user.offlineMiningLevel += 1;
+    } 
+    else if (type === 'bees_count') { // Покупка Пчёл по нарастающей
+      if (user.beesCountLevel >= 30) return res.status(400).json({ error: "Максимальный уровень покупки пчёл!" });
+      const cost = Math.floor(3500 * Math.pow(1.6, user.beesCountLevel));
+      if (user.balance < cost) return res.status(400).json({ error: "Мало мёда" });
+      user.balance -= cost; user.beesCountLevel += 1;
+    } 
+    else if (type === 'energy') { // Умная циклическая подзарядка бака
+      const currentConfig = ENERGY_BOOST_CONFIG[user.energyLimitLevel - 1];
+      if (user.balance < currentConfig.price) return res.status(400).json({ error: "Мало мёда" });
+      if (user.energy >= user.maxEnergy) return res.status(400).json({ error: "Бак энергии уже полон!" });
+
+      user.balance -= currentConfig.price;
+      user.energy = Math.min(user.maxEnergy, user.energy + currentConfig.amount);
+
+      // Циклический автоматический возврат уровня: после 4 уровня сбрасывается на 1
+      if (user.energyLimitLevel >= 4) {
+        user.energyLimitLevel = 1;
+      } else {
+        user.energyLimitLevel += 1;
+      }
+    }
+
     user.recalculateLevel();
     await user.save();
     res.json({ success: true, user });
-  } catch (error) { res.status(500).json({ success: false, error: error.message }); }
+  } catch (error) { res.status(500).json({ success: false }); }
 });
-
 app.post('/api/user/buy-card', async (req, res) => {
   try {
     const { telegramId, cardId } = req.body;
-    const cardConfig = UPGRADE_CARDS_CONFIG[cardId];
+    const config = { ceo_card: 100, marketing_card: 500, crypto_card: 2000 };
     let user = await User.findOne({ telegramId });
-    if (!user) return res.status(404).json({ success: false, error: "Профиль не найден" });
-    user.calculateOfflineProgress();
-    const userCardIndex = user.purchasedCards.findIndex(c => c.cardId === cardId);
-    const currentLevel = userCardIndex !== -1 ? user.purchasedCards[userCardIndex].level : 0;
-    const currentPrice = Math.floor(cardConfig.basePrice * Math.pow(1.5, currentLevel));
-    if (user.balance < currentPrice) return res.status(400).json({ success: false, error: "Не хватает мёда!" });
+    if (!user) return res.status(404).json({ success: false });
     
-    const currentProfit = currentLevel > 0 ? Math.floor(cardConfig.baseProfit * Math.pow(1.2, currentLevel - 1)) : 0;
-    const nextProfit = Math.floor(cardConfig.baseProfit * Math.pow(1.2, currentLevel));
-    user.balance -= currentPrice;
-    user.profitPerHour += (nextProfit - currentProfit);
-    if (userCardIndex !== -1) user.purchasedCards[userCardIndex].level += 1;
+    user.calculateOfflineProgress();
+    const userCard = user.purchasedCards.find(c => c.cardId === cardId);
+    const lvl = userCard ? userCard.level : (cardId === 'ceo_card' ? 1 : 0);
+    const price = Math.floor(config[cardId] * Math.pow(1.5, lvl));
+
+    if (user.balance < price) return res.status(400).json({ error: "Мало мёда" });
+    user.balance -= price;
+    if (userCard) userCard.level += 1; 
     else user.purchasedCards.push({ cardId, level: 1 });
+
     user.recalculateLevel();
     await user.save();
     res.json({ success: true, user });
-  } catch (error) { res.status(500).json({ success: false, error: "Ошибка сервера" }); }
-});
-const CURRENT_SECRET_COMBO = ['ceo_card', 'crypto_card'];
-const COMBO_REWARD = 250000;
-
-app.post('/api/user/check-combo', async (req, res) => {
-  try {
-    const { telegramId, cardId } = req.body;
-    const user = await User.findOne({ telegramId });
-    if (!user) return res.status(404).json({ success: false, error: "Игрок не найден" });
-    const todayStr = new Date().toISOString().split('T')[0];
-    if (user.lastComboDate === "COMPLETED_" + todayStr) {
-      return res.json({ success: true, user, comboCompleted: true });
-    }
-    if (user.lastComboDate !== todayStr && !user.lastComboDate.startsWith("COMPLETED_")) {
-      user.todayCombo = [];
-      user.lastComboDate = todayStr;
-    }
-    if (CURRENT_SECRET_COMBO.includes(cardId) && !user.todayCombo.includes(cardId)) {
-      user.todayCombo.push(cardId);
-      if (user.todayCombo.length === CURRENT_SECRET_COMBO.length) {
-        user.balance += COMBO_REWARD;
-        user.totalEarned += COMBO_REWARD;
-        user.lastComboDate = "COMPLETED_" + todayStr;
-      }
-    }
-    user.recalculateLevel();
-    await user.save();
-    res.json({ success: true, user, comboCompleted: user.lastComboDate.startsWith("COMPLETED_") });
-  } catch (error) { res.status(500).json({ success: false, error: error.message }); }
+  } catch (error) { res.status(500).json({ success: false }); }
 });
 
-// === НОВЫЙ ВЫДЕЛЕННЫЙ РОУТ ЕЖЕДНЕВНОГО ВХОДА (СТРОГО 1 РАЗ В ДЕНЬ) ===
+// СИСТЕМА ЕЖЕДНЕВНОГО НАКОПИТЕЛЬНОГО СТРИКА (ОТ 5,000 ДО 100,000 С УЧЕТОМ ПРОПУСКОВ)
 app.post('/api/user/claim-daily', async (req, res) => {
   try {
     const { telegramId } = req.body;
     const user = await User.findOne({ telegramId });
-    if (!user) return res.status(404).json({ success: false, error: "Игрок не найден" });
+    if (!user) return res.status(404).json({ success: false });
 
     const todayStr = new Date().toISOString().split('T')[0];
-    
-    // Жесткая проверка на бэкенде по дате сервера
     if (user.lastDailyClaim === todayStr) {
-      return res.status(400).json({ success: false, error: "Сегодня бонус уже был забран!" });
+      return res.status(400).json({ success: false, error: "Вы уже забрали пчелиный бонус на сегодня!" });
     }
 
-    user.balance += 5000;
-    user.totalEarned += 5000;
-    user.lastDailyClaim = todayStr; // Фиксируем сегодняшнюю дату
-    
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+    // Если заходил вчера — стрик растет (до 7 дня), иначе — обнуляется на 1 день
+    if (user.lastDailyClaim === yesterdayStr) {
+      user.dailyStreak = (user.dailyStreak + 1) % 7;
+    } else {
+      user.dailyStreak = 0;
+    }
+
+    const currentReward = DAILY_REWARDS[user.dailyStreak];
+    user.balance += currentReward;
+    user.totalEarned += currentReward;
+    user.lastDailyClaim = todayStr;
+
     user.recalculateLevel();
     await user.save();
-    
-    res.json({ success: true, user, msg: "Бонус +5,000 🍯 успешно начислен!" });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
+    res.json({ success: true, user, rewardClaimed: currentReward });
+  } catch (error) { res.status(500).json({ success: false, error: error.message }); }
 });
 
+// Сохранение верифицированного TON кошелька в MongoDB Atlas
 app.post('/api/user/save-wallet', async (req, res) => {
   try {
     const { telegramId, walletAddress } = req.body;
     let user = await User.findOne({ telegramId });
-    if (!user) return res.status(404).json({ success: false, error: "Юзер не найден" });
-    user.walletAddress = walletAddress || "";
-    await user.save();
+    if (user) { user.walletAddress = walletAddress; await user.save(); }
     res.json({ success: true, user });
-  } catch (error) { res.status(500).json({ success: false, error: error.message }); }
+  } catch (error) { res.status(500).json({ success: false }); }
 });
-
-app.get('/', (req, res) => res.send('API пчелиного GameFi кликера стабильно работает онлайн! 🐝'));
-
-if (bot) {
-  bot.start((ctx) => {
-    const username = ctx.from.username || ctx.from.first_name || "Пчёлка";
-    const frontendUrl = process.env.FRONTEND_URL || "https://ds3343366-hue.github.io/clicker-frontend/";
-    ctx.reply(`Привет, ${username}! Добро пожаловать в улей Tap Game! 🐝`, {
-      reply_markup: { inline_keyboard: [[{ text: "Развивать Улей! 🍯", web_app: { url: frontendUrl } }]] }
-    });
-  });
-}
 
 const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/tap_game';
 mongoose.connect(mongoUri).then(() => {
-  console.log('✅ База данных MongoDB Atlas успешно подключена');
-  app.listen(PORT, () => {
-    console.log(`🚀 Сервер на порту ${PORT}`);
-    if (bot) {
-      setTimeout(() => {
-        bot.telegram.deleteWebhook({ drop_pending_updates: true })
-          .then(() => { bot.launch().then(() => console.log('🤖 Бот успешно запущен без конфликтов!')); })
-          .catch(e => console.error(e.message));
-      }, 4000);
-    }
-  });
+  app.listen(PORT, () => console.log(`🚀 GameFi сервер онлайн на порту ${PORT}`));
 });
 
