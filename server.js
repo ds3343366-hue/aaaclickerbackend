@@ -5,31 +5,41 @@ const mongoose = require('mongoose');
 const { TonClient, WalletContractV4, internal, toNano } = require('@ton/ton');
 const { mnemonicToPrivateKey } = require('@ton/crypto');
 
-// Безопасная инициализация dotenv: загружаем файл только если мы НЕ на Render
-if (process.env.NODE_ENV !== 'production') {
-    require('dotenv').config();
-}
+// Запуск dotenv в тихом режиме
+require('dotenv').config({ silent: true });
 
 const app = express();
 
+// Настройка CORS для вашего фронтенда на GitHub Pages
 app.use(cors({
-    origin: '*', 
+    origin: [
+        'https://ds3343366-hue.github.io/clicker-frontend'
+    ],
     methods: ['GET', 'POST'],
     allowedHeaders: ['Content-Type']
 }));
 app.use(express.json());
 
-// Защищенный выбор URI: приоритет отдается системным переменным Render
+// ============================================================================
+// БЕЗОПАСНОЕ ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ (БЕЗ ХАРДКОДА ПАРОЛЕЙ)
+// ============================================================================
+// Код берёт ссылку ИСКЛЮЧИТЕЛЬНО из переменных окружения (вкладка Environment на Render)
 const mongoURI = process.env.MONGODB_URI;
 
 if (!mongoURI) {
-    console.error('❌ Критическая ошибка: Переменная MONGODB_URI не обнаружена в системе!');
-    process.exit(1); // Останавливаем сервер, если переменная пустая
+    console.error('\n❌ Критическая ошибка: Переменная MONGODB_URI не обнаружена в системе!');
+    console.error('Пожалуйста, добавьте вашу ссылку на MongoDB Atlas во вкладку Environment на Render.\n');
+    process.exit(1); 
 }
 
 mongoose.connect(mongoURI)
-    .then(() => console.log('📦 Успешное подключение к MongoDB'))
-    .catch(err => console.error('❌ Ошибка подключения к MongoDB:', err));
+    .then(() => console.log('📦 Успешное подключение к облачной базе данных MongoDB Atlas'))
+    .catch(err => {
+        console.error('❌ Ошибка подключения к MongoDB:', err.message);
+        process.exit(1);
+    });
+
+// Схема пользователя
 const userSchema = new mongoose.Schema({
     tg_id: { type: Number, required: true, unique: true },
     balance: { type: Number, default: 0 },
@@ -41,7 +51,6 @@ const userSchema = new mongoose.Schema({
 
 const User = mongoose.model('User', userSchema);
 const BOT_TOKEN = process.env.BOT_TOKEN;
-
 const ITEM_PRICES = {
     asic: 500,
     ton: 2000,
@@ -49,6 +58,7 @@ const ITEM_PRICES = {
     ai: 1000
 };
 
+// Конфигурация TON SDK
 const TON_ENDPOINT = process.env.TON_ENDPOINT || 'https://toncenter.com'; 
 const TON_API_KEY = process.env.TON_API_KEY; 
 
@@ -57,14 +67,10 @@ const tonClient = new TonClient({
     apiKey: TON_API_KEY
 });
 
+// Защищенный Middleware верификации сессии Telegram Mini App
 function verifyTelegramWebAppData(req, res, next) {
     const { initData } = req.body;
     
-    if (process.env.NODE_ENV !== 'production' && (!initData || initData === "demo_init_data_for_testing")) {
-        req.tgUserId = 99999; 
-        return next();
-    }
-
     if (!initData) {
         return res.status(401).json({ error: "Unauthorized: Missing initData" });
     }
@@ -74,6 +80,7 @@ function verifyTelegramWebAppData(req, res, next) {
         const hash = q.get('hash');
         q.delete('hash');
         
+        // Алфавитная сортировка параметров перед проверкой хэша (Строгое требование Telegram API)
         q.sort(); 
         
         const items = Array.from(q.entries())
@@ -96,6 +103,37 @@ function verifyTelegramWebAppData(req, res, next) {
         return res.status(500).json({ error: "Internal Auth Error", details: e.message }); 
     }
 }
+
+// Маршрут синхронизации
+app.post('/api/sync', verifyTelegramWebAppData, async (req, res) => {
+    const userId = req.tgUserId;
+    try {
+        let user = await User.findOne({ tg_id: userId });
+        if (!user) {
+            user = new User({ tg_id: userId });
+            await user.save();
+        }
+        
+        const now = Date.now();
+        const lastClaim = new Date(user.last_claim_time).getTime();
+        const elapsed = now - lastClaim;
+        const MIN_CLAIM_TIME = 3 * 60 * 60 * 1000;  
+        const MAX_CLAIM_TIME = 8 * 60 * 60 * 1000;  
+        
+        let effectiveElapsed = Math.min(elapsed, MAX_CLAIM_TIME);
+        let minedAmount = elapsed >= MIN_CLAIM_TIME ? (effectiveElapsed / (1000 * 60 * 60)) * user.passive_rate : 0;
+
+        res.json({
+            balance: Number(user.balance),
+            clickPower: user.click_power,
+            passiveRate: user.passive_rate,
+            minedAmount: Number(minedAmount.toFixed(2)),
+            canClaim: elapsed >= MIN_CLAIM_TIME,
+            secondsToClaim: elapsed < MIN_CLAIM_TIME ? Math.ceil((MIN_CLAIM_TIME - elapsed) / 1000) : 0,
+            walletAddress: user.wallet_address
+        });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
 app.post('/api/click', verifyTelegramWebAppData, async (req, res) => {
     try {
         const user = await User.findOne({ tg_id: req.tgUserId });
@@ -145,21 +183,13 @@ app.post('/api/buy', verifyTelegramWebAppData, async (req, res) => {
         if (itemType === 'ai') user.click_power += 2;
 
         await user.save();
-        res.json({ 
-            success: true, 
-            balance: Number(user.balance), 
-            clickPower: user.click_power, 
-            passiveRate: user.passive_rate 
-        });
+        res.json({ success: true, balance: Number(user.balance), clickPower: user.click_power, passiveRate: user.passive_rate });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/reset', verifyTelegramWebAppData, async (req, res) => {
     try {
-        await User.findOneAndUpdate(
-            { tg_id: req.tgUserId },
-            { balance: 0, click_power: 1, passive_rate: 60, last_claim_time: new Date() }
-        );
+        await User.findOneAndUpdate({ tg_id: req.tgUserId }, { balance: 0, click_power: 1, passive_rate: 60, last_claim_time: new Date() });
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -169,11 +199,7 @@ app.post('/api/wallet/connect', verifyTelegramWebAppData, async (req, res) => {
     if (!address) return res.status(400).json({ error: "Wallet address is required" });
 
     try {
-        const user = await User.findOneAndUpdate(
-            { tg_id: req.tgUserId },
-            { wallet_address: address },
-            { new: true }
-        );
+        const user = await User.findOneAndUpdate({ tg_id: req.tgUserId }, { wallet_address: address }, { new: true });
         if (!user) return res.status(404).json({ error: "User not found" });
         res.json({ success: true, walletAddress: user.wallet_address });
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -196,13 +222,7 @@ app.post('/api/admin/airdrop/run', async (req, res) => {
 
         const messages = [];
         for (const user of participants) {
-            messages.push(internal({
-                to: user.wallet_address,
-                value: toNano(rewardAmountTon.toString()), 
-                body: `Cyber Miner AirDrop Reward!`, 
-                bounce: false,
-            }));
-            
+            messages.push(internal({ to: user.wallet_address, value: toNano(rewardAmountTon.toString()), body: `Cyber Miner AirDrop Reward!`, bounce: false }));
             if (messages.length === 4 || user === participants[participants.length - 1]) {
                 await contract.sendTransfer({ secretKey: keyPair.secretKey, seqno, messages: [...messages] });
                 messages.length = 0;
@@ -216,27 +236,17 @@ app.post('/api/admin/airdrop/run', async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/', (req, res) => {
-    res.json({ app: "Cyber Miner Mongo Backend", status: "ready" });
-});
+app.get('/', (req, res) => { res.json({ app: "Cyber Miner Cloud Backend", status: "ready" }); });
 
-// ============================================================================
-// ИНФОРМАТИВНЫЙ СТАРТ СЕРВЕРА С ВЫВОДОМ НАСТРОЕК ОКРУЖЕНИЯ
-// ============================================================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`\n==================================================`);
     console.log(`🚀 БЭКЕНД УСПЕШНО ЗАПУЩЕН НА ПОРТУ: ${PORT}`);
-    console.log(`📦 ДАННЫЕ ИЗ .env / RENDER ENVIRONMENT:`);
-    
-    // Безопасно маскируем логин и пароль от базы данных Atlas в логах
-    const maskedURI = mongoURI.replace(/\/\/.*@/, '//***:***@');
-    console.log(`   🔌 MONGODB_URI: ${maskedURI}`);
-    
-    console.log(`   🤖 BOT_TOKEN:   ${BOT_TOKEN ? '✅ Загружен (Скрыт)' : '❌ ОТСУТСТВУЕТ!'}`);
-    console.log(`   💎 TON_NODE:    ${TON_ENDPOINT}`);
-    console.log(`   🔑 TON_WALLET:  ${process.env.TON_MNEMONIC ? '✅ Мнемоника привязана' : '❌ ОТСУТСТВУЕТ!'}`);
-    console.log(`   👑 ADMIN_KEY:   ${process.env.ADMIN_SECRET_KEY ? '✅ Пароль задан' : '❌ ОТСУТСТВУЕТ!'}`);
+    console.log(`📦 ОБЛАЧНАЯ КОНФИГУРАЦИЯ БАЗЫ ДАННЫХ ATLAS:`);
+    const maskedURI = mongoURI ? mongoURI.replace(/\/\/.*@/, '//***:***@') : "ОТСУТСТВУЕТ!";
+    console.log(`   🔌 MONGODB_ATLAS_URI: ${maskedURI}`);
+    console.log(`   🤖 BOT_TOKEN:          ${BOT_TOKEN ? '✅ Загружен' : '❌ ОТСУТСТВУЕТ!'}`);
+    console.log(`   💎 TON_BLOCKCHAIN:     ${TON_ENDPOINT}`);
     console.log(`==================================================\n`);
 });
 
