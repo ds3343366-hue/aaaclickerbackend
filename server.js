@@ -5,7 +5,7 @@ const mongoose = require('mongoose');
 const { TonClient, WalletContractV4, internal, toNano } = require('@ton/ton');
 const { mnemonicToPrivateKey } = require('@ton/crypto');
 
-// Запуск dotenv в тихом режиме
+// Стабильный запуск dotenv: если файла нет в системе (на Render), библиотека просто пропустит этот шаг
 require('dotenv').config({ silent: true });
 
 const app = express();
@@ -13,17 +13,15 @@ const app = express();
 // Настройка CORS для вашего фронтенда на GitHub Pages
 app.use(cors({
     origin: [
-        'https://ds3343366-hue.github.io/clicker-frontend'
+        'https://github.io',
+        'https://ds3343366-hue.github.io/clicker-frontend/'
     ],
     methods: ['GET', 'POST'],
     allowedHeaders: ['Content-Type']
 }));
 app.use(express.json());
 
-// ============================================================================
-// БЕЗОПАСНОЕ ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ (БЕЗ ХАРДКОДА ПАРОЛЕЙ)
-// ============================================================================
-// Код берёт ссылку ИСКЛЮЧИТЕЛЬНО из переменных окружения (вкладка Environment на Render)
+// Прямое чтение системной переменной из дашборда Render
 const mongoURI = process.env.MONGODB_URI;
 
 if (!mongoURI) {
@@ -58,7 +56,6 @@ const ITEM_PRICES = {
     ai: 1000
 };
 
-// Конфигурация TON SDK
 const TON_ENDPOINT = process.env.TON_ENDPOINT || 'https://toncenter.com'; 
 const TON_API_KEY = process.env.TON_API_KEY; 
 
@@ -67,7 +64,6 @@ const tonClient = new TonClient({
     apiKey: TON_API_KEY
 });
 
-// Защищенный Middleware верификации сессии Telegram Mini App
 function verifyTelegramWebAppData(req, res, next) {
     const { initData } = req.body;
     
@@ -80,7 +76,7 @@ function verifyTelegramWebAppData(req, res, next) {
         const hash = q.get('hash');
         q.delete('hash');
         
-        // Алфавитная сортировка параметров перед проверкой хэша (Строгое требование Telegram API)
+        // Алфавитная сортировка параметров (строгое требование Telegram API)
         q.sort(); 
         
         const items = Array.from(q.entries())
@@ -104,7 +100,6 @@ function verifyTelegramWebAppData(req, res, next) {
     }
 }
 
-// Маршрут синхронизации
 app.post('/api/sync', verifyTelegramWebAppData, async (req, res) => {
     const userId = req.tgUserId;
     try {
@@ -242,11 +237,9 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`\n==================================================`);
     console.log(`🚀 БЭКЕНД УСПЕШНО ЗАПУЩЕН НА ПОРТУ: ${PORT}`);
-    console.log(`📦 ОБЛАЧНАЯ КОНФИГУРАЦИЯ БАЗЫ ДАННЫХ ATLAS:`);
     const maskedURI = mongoURI ? mongoURI.replace(/\/\/.*@/, '//***:***@') : "ОТСУТСТВУЕТ!";
     console.log(`   🔌 MONGODB_ATLAS_URI: ${maskedURI}`);
     console.log(`   🤖 BOT_TOKEN:          ${BOT_TOKEN ? '✅ Загружен' : '❌ ОТСУТСТВУЕТ!'}`);
-    console.log(`   💎 TON_BLOCKCHAIN:     ${TON_ENDPOINT}`);
     console.log(`==================================================\n`);
 });
 
