@@ -20,8 +20,8 @@ app.use(cors({
 app.use(express.json());
 
 // 2. Безопасное чтение переменных окружения (удаляем случайные пробелы)
-const mongoURI = (process.env.MONGODB_URI || process.env.MONGODB_ATLAS_URI || '').trim();
-const BOT_TOKEN = (process.env.BOT_TOKEN || '').trim();
+const mongoURI = (process.env.MONGO_URI || process.env.MONGODB_URI || '').trim();
+const BOT_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN || '').trim();
 const TON_ENDPOINT = (process.env.TON_ENDPOINT || 'https://toncenter.com').trim();
 const TON_API_KEY = (process.env.TON_API_KEY || '').trim();
 
